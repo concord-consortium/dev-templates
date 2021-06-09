@@ -1,4 +1,4 @@
-# Scripts to populate templats
+# Scripts to populate templates
 
 ## General Install
 
@@ -11,7 +11,7 @@ This uses Pivotal Tracker to print out markdown like what is suggested in the `n
 - ignores chores and releases
 - strips the `**[label]**` off of the front of the stories
 
-To run this script need your PT token: https://www.pivotaltracker.com/help/articles/api_token/
+To run this script you need your PT token: https://www.pivotaltracker.com/help/articles/api_token/
 
 Export this as an environment variable
 
