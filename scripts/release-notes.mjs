@@ -34,10 +34,10 @@ async function collectStories(projectId, search) {
 
 const ptLabel = process.argv[2];
 const search = `label:${ptLabel} includedone:true`;
-// Orange
-await collectStories(2441249, search)
-// Teal
-await collectStories(2441242, search)
+const orangeProjectId = 2441249;
+const tealProjectId = 2441242;
+await collectStories(orangeProjectId, search)
+await collectStories(tealProjectId, search)
 
 function storyItem(story) {
   const name = story.name.replace(/\*\*\[[^\]]*\]\*\* ?/, "")
