@@ -41,7 +41,7 @@ await collectStories(tealProjectId, search)
 
 function storyItem(story) {
   const name = story.name.replace(/\*\*\[[^\]]*\]\*\* ?/, "")
-  return `${name} [#${story.id}](${story.url})`
+  return `PT-${story.id}: ${name}`
 }
 
 if (features.length > 0) {
