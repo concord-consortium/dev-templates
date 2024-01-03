@@ -36,8 +36,10 @@ const ptLabel = process.argv[2];
 const search = `label:${ptLabel} includedone:true`;
 const orangeProjectId = 2441249;
 const tealProjectId = 2441242;
+const codapProjectId = 2556922;
 await collectStories(orangeProjectId, search)
 await collectStories(tealProjectId, search)
+await collectStories(codapProjectId, search)
 
 function storyItem(story) {
   const name = story.name.replace(/\*\*\[[^\]]*\]\*\* ?/, "")
