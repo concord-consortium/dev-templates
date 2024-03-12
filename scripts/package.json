@@ -4,12 +4,15 @@
   "description": "",
   "main": "release-notes.js",
   "dependencies": {
+    "@octokit/rest": "^20.0.2",
+    "dotenv": "^16.4.5",
     "node-fetch": "^2.6.1"
   },
-  "devDependencies": {},
   "scripts": {
     "release-notes": "node release-notes.mjs",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "release-status": "node release-status.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "gh:test": "node test-github.mjs"
   },
   "keywords": [],
   "author": "",
