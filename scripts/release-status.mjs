@@ -5,6 +5,15 @@ import { Octokit } from "@octokit/rest";
 
 const ptToken = process.env.PT_TOKEN;
 const ghToken = process.env.GITHUB_TOKEN;
+if (!ptToken) {
+  console.error("PT_TOKEN environment variable is required");
+  exit(1);
+} 
+
+if (!ghToken) {
+  console.error("GITHUB_TOKEN environment variable is required");
+  exit(1);
+}
 
 // TODO: add help text and validate command line arguments
 const ptLabel = process.argv[2];
@@ -74,7 +83,7 @@ function logStory(story) {
 
 // use paginate with a map function so we can handle more than 250 commits
 // The result is an array of strings, even if multiple pages are returned
-// - need a git token with soemthing like `content:read`
+// - need a git token with something like `content:read`
 const commits = await octokit.paginate(
   octokit.repos.compareCommits, 
   {
@@ -108,7 +117,7 @@ const prs = await octokit.paginate(
   octokit.pulls.list,
   {
     owner: "concord-consortium",
-    repo: "collaborative-learning",
+    repo: gitRepo,
     sort: "updated",
     state: "all",
     direction: "desc"
