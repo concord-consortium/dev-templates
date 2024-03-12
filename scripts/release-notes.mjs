@@ -22,17 +22,18 @@ async function collectStories(projectId, search) {
   });
   const json = await response.json();
   const stories = json.stories.stories
-  for(const story of stories) {
-    if(story.story_type === "feature"){
+  for (const story of stories) {
+    if (story.story_type === "feature") {
       features.push(story);
     }
-    if(story.story_type === "bug"){
+    if (story.story_type === "bug") {
       bugs.push(story);
     }
   }
 }
 
 const ptLabel = process.argv[2];
+const slack = process.argv?.[3];
 const search = `label:${ptLabel} includedone:true`;
 const orangeProjectId = 2441249;
 const tealProjectId = 2441242;
@@ -43,19 +44,19 @@ await collectStories(codapProjectId, search)
 
 function storyItem(story) {
   const name = story.name.replace(/\*\*\[[^\]]*\]\*\* ?/, "")
-  return `PT-${story.id}: ${name}`
+  return slack ? `*[PT-${story.id}](https://pivotaltracker.com/story/show/${story.id}):* ${name.trim()}` : `**PT-${story.id}:** ${name.trim()}`;
 }
 
 if (features.length > 0) {
-  console.log("### Features/Improvements");
-  for(const feature of features) {
-    console.log(`- ${storyItem(feature)}`);
+  console.log(`${slack ? '> ' : ''}${slack ? '*' : '### '}✨ Features & Improvements:${slack ? '*' : ''}`);
+  for (const feature of features) {
+    console.log(`${slack ? '> ' : ''}- ${storyItem(feature)}`);
   }
-  console.log("");
+  console.log(`${slack ? '> ' : ''}`);
 }
 if (bugs.length > 0) {
-  console.log("### Bug Fixes");
-  for(const bug of bugs) {
-    console.log(`- ${storyItem(bug)}`);
+  console.log(`${slack ? '> ' : ''}${slack ? '*' : '### '}🐞 Bug Fixes:${slack ? '*' : ''}`);
+  for (const bug of bugs) {
+    console.log(`${slack ? '> ' : ''}- ${storyItem(bug)}`);
   }
 }
