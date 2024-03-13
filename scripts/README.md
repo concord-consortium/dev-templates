@@ -17,9 +17,13 @@ Add it to a `.env` file in the scripts folder with
 
     PT_TOKEN=<token>
 
-Run it with
+For GitHub markdown formatting, run it with:
 
     npm run release-notes <pt label>
+
+For Slack markdown formatting, run it with:
+
+    npm run release-notes <pt label> slack
 
 ## Release Status
 
