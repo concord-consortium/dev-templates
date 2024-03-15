@@ -7,12 +7,12 @@ const ptToken = process.env.PT_TOKEN;
 const ghToken = process.env.GITHUB_TOKEN;
 if (!ptToken) {
   console.error("PT_TOKEN environment variable is required");
-  exit(1);
+  process.exit(1);
 } 
 
 if (!ghToken) {
   console.error("GITHUB_TOKEN environment variable is required");
-  exit(1);
+  process.exit(1);
 }
 
 // TODO: add help text and validate command line arguments
@@ -21,6 +21,7 @@ const ptLabel = process.argv[2];
 const gitRepo = process.argv[3];
 const gitBase = process.argv[4];
 const gitHead = process.argv[5];
+const slack = process.argv[6];
 
 const octokit = new Octokit({ 
   auth: ghToken,
@@ -45,7 +46,7 @@ async function collectStories(projectId, search) {
   });
   const json = await response.json();
   const projectStories = json.stories.stories.filter(
-    story => ["feature", "bug"].includes(story.story_type)
+    story => ["feature", "bug", "chore"].includes(story.story_type)
   );
   stories.push(...projectStories);
 }
@@ -71,14 +72,33 @@ await collectStories(orangeProjectId, search);
 await collectStories(tealProjectId, search);
 await collectStories(codapProjectId, search);
 
-function logStory(story) {
+let printIndent = 0;
+function print(msg) {
+  console.log(`${" ".repeat(printIndent)}${msg}`);
+}
+
+function indent(callback){
+  printIndent += 2;
+  callback();
+  printIndent -= 2;
+}
+
+function logStoryShort(story) {
   const name = story.name.replace(/\*\*\[[^\]]*\]\*\* ?/, "");
+  const idString = `PT-${story.id}`;
+  const prefix = slack
+    ? `*[${idString}](${story.url})*`
+    : idString;
+  print(`${prefix}: ${name} (${story.story_type})`);
+}
+
+function logStory(story) {
+  logStoryShort(story);
   const storyPrs = story.pull_requests.map(pr => pr.number);
-  const msg = 
-    `PT-${story.id}: ${story.story_type}: ${name}\n` +
-    `  PRs: ${storyPrs} State: ${story.current_state}\n` +
-    `  ${story.url}`;
-  console.log(msg);
+  indent(() => {
+    print(`PRs: ${storyPrs} State: ${story.current_state}`);
+    print(story.url);
+  });
 }
 
 // use paginate with a map function so we can handle more than 250 commits
@@ -101,7 +121,7 @@ const commits = await octokit.paginate(
   
 if ( commits.length < 1 ) {
   console.log("No commits found!");
-  exit(0);
+  process.exit(0);
 }
 const oldestCommitDate = commits[0].date;
 const prCommits = commits.filter(commit => commit.message.includes("#"));
@@ -148,48 +168,78 @@ const mergedPrs = updatedPrs.filter(
 );
 
 function logPR(pr) {
-  console.log(`${pr.number}: ${pr.title}`);
-  console.log(`  ${pr.html_url}`);
-  console.log(`  merged_at: ${pr.merged_at}`);
+  print(`${pr.number}: ${pr.title}`);
+  indent(() => {
+    print(pr.html_url);
+    if (pr.merged_at) {
+      print(`merged_at: ${pr.merged_at}`);
+    }  
+  });
 }
 
-console.log(`commit date range: ${commits[0].date} - ${commits[commits.length-1].date}`);
-console.log(`found ${prCommits.length} commits with messages that look like PR merges`);
-console.log(`found ${updatedPrs.length} PRs updated after the oldest commit`);
-console.log(`found ${mergedPrs.length} PRs with merge commits`);
+print(`commit date range: ${commits[0].date} - ${commits[commits.length-1].date}`);
+print(`found ${updatedPrs.length} PRs updated after the oldest commit`);
+print(`found ${mergedPrs.length} PRs with merge commits`);
 
-function logList(label, list, logFunction) {
-  console.log("");
+const iconMap = {
+  shouldBeEmpty: {empty: "✅", notEmpty: "❌" },
+  required: {empty: "❌", notEmpty: "✅"}
+}
+
+function logList({header, icons, list, logItem}) {
+  print("");
   if (list.length > 0) {
-    console.log(label)
-    list.forEach(logFunction);
+    print(`${icons.notEmpty} ${header}`);
+    list.forEach(logItem);
   } else {
-    console.log(`No ${label}`);
+    print(`${icons.empty} No ${header}`);
   }
 }
 
-logList(`Stories with "${ptLabel}" `, stories, logStory);
+logList({
+  header: `Stories with "${ptLabel}" `,
+  icons: iconMap.required,
+  list: stories, 
+  logItem: logStory
+});
 
-logList("Merged PRs", mergedPrs, logPR);
+logList({
+  header: "Merged PRs",
+  icons: iconMap.required,
+  list: mergedPrs, 
+  logItem: logPR
+});
 
-// logList("Updated PRs", updatedPrs, logPR);
+// logList({header: "Updated PRs", list: updatedPrs, logItem: logPR);
 
 // If a PR doesn't have a story, it won't show up in the output of the release-notes script.
-const unStoriedPrs = mergedPrs.filter(pr =>
-  ! stories.find(story => 
-    story.pull_requests.find(storyPr => 
-      storyPr.number == pr.number)));
-logList(`Merged PRs without a story labeled with ${ptLabel}`, unStoriedPrs, logPR);
+logList({
+  header: `Merged PRs without a story labeled with ${ptLabel}`, 
+  icons: iconMap.shouldBeEmpty,
+  list: mergedPrs.filter(pr =>
+    ! stories.find(story => 
+      story.pull_requests.find(storyPr => 
+        storyPr.number == pr.number))), 
+  logItem: logPR
+});
 
 // A story without a PR might mean the developer didn't add the Story id to the branch in
 // GitHub. In this case the PR might not be merged and the release might go out claiming
 // the work is done, but actually it isn't included in the release.
-const unPRdStories = stories.filter(story => ! story.pull_requests?.length);
-logList(`Stories with "${ptLabel}" without PRs`, unPRdStories, logStory);
+logList({
+  header: `Stories with "${ptLabel}" without PRs`, 
+  icons: iconMap.shouldBeEmpty,
+  list: stories.filter(story => ! story.pull_requests?.length), 
+  logItem: logStory
+});
 
 // In most cases we shouldn't be do a release when there are un accepted stories.
-const unAcceptedStories = stories.filter(story => (story.current_state !== "accepted"));
-logList(`Un Accepted stories with "${ptLabel}"`, unAcceptedStories, logStory);
+logList({
+  header: `Un Accepted stories with "${ptLabel}"`, 
+  icons: iconMap.shouldBeEmpty,
+  list: stories.filter(story => (story.current_state !== "accepted")), 
+  logItem: logStory
+});
 
 // Open PRs linked to stories
 // If the story still has an open PR we can't make the release candidate branch
@@ -215,8 +265,17 @@ const openStoryPRs = storyPRs.filter(storyPr => {
   storyPr.ghPr = ghPr;
   return ghPr.state === "open";
 });
-logList("Open PRs linked to stories", openStoryPRs, storyPr => {
-  console.log(`Story: ${storyPr.story_id} has open PR: ${storyPr.number}`);
+logList({
+  header: "Open PRs linked to stories", 
+  icons: iconMap.shouldBeEmpty,
+  list: openStoryPRs, 
+  logItem: storyPr => {
+    const story = stories.find(_story => _story.id == storyPr.story_id);
+    logStoryShort(story);
+    indent(() => {
+      logPR(storyPr.ghPr);
+    })
+  }
 })
 
 // TODO: there could be PRs that are open that we might want to merge but
