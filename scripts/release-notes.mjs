@@ -6,7 +6,11 @@ const ptToken = process.env.PT_TOKEN;
 
 const features = [];
 const bugs = [];
+const underTheHood = [];
 
+function isUndoTheHood(story) {
+  return story.labels.find(label => label.name === "under-the-hood");
+}
 
 async function collectStories(projectId, search) {
   const urlQuery = querystring.stringify(
@@ -24,11 +28,15 @@ async function collectStories(projectId, search) {
   const json = await response.json();
   const stories = json.stories.stories
   for (const story of stories) {
-    if (story.story_type === "feature") {
-      features.push(story);
-    }
-    if (story.story_type === "bug") {
-      bugs.push(story);
+    if (isUndoTheHood(story)) {
+      underTheHood.push(story);
+    } else {
+      if (story.story_type === "feature") {
+        features.push(story);
+      }
+      if (story.story_type === "bug") {
+        bugs.push(story);
+      }  
     }
   }
 }
@@ -62,16 +70,16 @@ function printHeader(msg) {
   }
 }
 
-if (features.length > 0) {
-  printHeader("✨ Features & Improvements:");
-  for (const feature of features) {
-    print(`- ${storyItem(feature)}`);
-  }
-  print("");
+function printSection(msg, stories) {
+  if (stories.length > 0) {
+    printHeader(msg);
+    for (const story of stories) {
+      print(`- ${storyItem(story)}`);
+    }
+    print("");
+  }  
 }
-if (bugs.length > 0) {
-  printHeader("🐞 Bug Fixes:");
-  for (const bug of bugs) {
-    print(`- ${storyItem(bug)}`);
-  }
-}
+
+printSection("✨ Features & Improvements:", features);
+printSection("🐞 Bug Fixes:", bugs);
+printSection("🛠 Under the Hood:", underTheHood);
