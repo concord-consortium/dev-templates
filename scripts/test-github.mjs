@@ -1,4 +1,5 @@
-import 'dotenv/config'
+import "dotenv/config";
+import util from "util";
 import { Octokit } from "@octokit/rest";
 
 const ghToken = process.env.GITHUB_TOKEN;
@@ -16,6 +17,8 @@ const octokit = new Octokit({
 
 // use paginate with a map function so we can handle more than 250 commits
 // The result is an array of strings, even if multiple pages are returned
+let firstResponse = true;
+let compareInfo;
 const commits = await octokit.paginate(
   octokit.repos.compareCommits, 
   {
@@ -24,21 +27,33 @@ const commits = await octokit.paginate(
     base: "v5.3.0",
     head: "master"
   },
-  (response) => response.data.commits.map(commit => ({
-    message: commit.commit.message.split("\n", 1)[0],
-    sha: commit.sha,
-    date: commit.commit.author.date
-  }))
+  (response) => {
+    if (firstResponse) {
+      // console.log(util.inspect(response.data, {depth: 4, colors: true}));
+      const {commits, ...everythingElse} = response.data;
+      compareInfo = everythingElse;
+      firstResponse = false;
+    }
+    return response.data.commits.map(commit => ({
+      message: commit.commit.message.split("\n", 1)[0],
+      sha: commit.sha,
+      date: commit.commit.author.date
+    }));
+  }
 );
 
 // console.log(result);
 // console.log(result.data.commits);
 // const messages = result.data.commits.map(commit => commit.commit.message.split("\n", 1)[0])
 if ( commits.length < 1 ) {
-    console.log("No commits found!");
-    exit(0);
+  console.log("No commits found.");
 }
-const oldestCommitDate = commits[0].date;
+if ( !compareInfo || !compareInfo.merge_base_commit) {
+  console.error("Did not get valid compareInfo", {compareInfo});
+  process.exit(1);
+}
+const oldestCommitDate = compareInfo.merge_base_commit.commit.author.date;
+console.log({oldestCommitDate});
 const prCommits = commits.filter(commit => commit.message.includes("#"));
 console.log(prCommits);
 
@@ -77,7 +92,7 @@ const mergedPrs = updatedPrs.filter(
   pr => commits.find(commit => commit.sha === pr.merge_commit_sha)
 );
 console.log(mergedPrs);
-console.log(`commit date range: ${commits[0].date} - ${commits[commits.length-1].date}`);
+console.log(`commit date range: ${oldestCommitDate} - ${commits[commits.length-1]?.date}`);
 console.log(`found ${prCommits.length} commits with messages that look like PR merges`);
 console.log(`found ${updatedPrs.length} PRs updated after the oldest commit`);
 console.log(`found ${mergedPrs.length} PRs with merge commits`);
