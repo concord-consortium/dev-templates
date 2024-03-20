@@ -1,4 +1,5 @@
-import 'dotenv/config'
+import 'dotenv/config';
+import util from 'util';
 import fetch from 'node-fetch';
 import querystring from 'querystring';
 import { Octokit } from "@octokit/rest";
@@ -38,7 +39,9 @@ async function collectStories(projectId, search) {
 
   // Documentation of this API is here: https://www.pivotaltracker.com/help/api/rest/v5#Search
   // The fields argument is added so the pull_requests are included in the stories response
-  const fields = "fields=stories(stories(id,name,story_type,current_state,url,pull_requests))"
+  const reviewFields = "id,kind,story_id,review_type,status,updated_at"
+  const storyFields = `id,name,story_type,current_state,url,pull_requests,reviews(${reviewFields}),tasks,owners`;
+  const fields = `fields=stories(stories(${storyFields}))`
   const url = `https://www.pivotaltracker.com/services/v5/projects/${projectId}/search?${fields}&${urlQuery}`
 
   const response = await fetch(url, {
@@ -72,6 +75,9 @@ await collectStories(orangeProjectId, search);
 await collectStories(tealProjectId, search);
 await collectStories(codapProjectId, search);
 
+// Print the first story
+// console.log(util.inspect(stories[0], {depth: 5, colors: true}));
+
 let printIndent = 0;
 function print(msg) {
   console.log(`${" ".repeat(printIndent)}${msg}`);
@@ -92,18 +98,48 @@ function logStoryShort(story) {
   print(`${prefix}: ${name} (${story.story_type})`);
 }
 
+function storyPrsSummary(story) {
+  if (!story.pull_requests?.length) {
+    return "none";
+  }
+  return story.pull_requests.map(pr => pr.number);
+}
+
+function reviewSummary(story) {
+  if (story.reviews.length === 0) {
+    return "none";
+  }
+  return story.reviews.map(review => 
+    `${review.review_type.name}|${review.status}`
+  ).join(", ");
+}
+
+function printTasks(story) {
+  if (!story.tasks.length) return;
+
+  const unfinishedTasks = story.tasks.filter(task => !task.complete);
+  if (!unfinishedTasks.length) return;
+
+  print(`Unfinished Tasks: ${unfinishedTasks.length}`);
+}
+
 function logStory(story) {
   logStoryShort(story);
-  const storyPrs = story.pull_requests.map(pr => pr.number);
   indent(() => {
-    print(`PRs: ${storyPrs} State: ${story.current_state}`);
-    print(story.url);
+    print(`PRs: ${storyPrsSummary(story)}, State: ${story.current_state}`);
+    print(`Reviews: ${reviewSummary(story)}`);
+    printTasks(story);
+    print(`Owners: ${story.owners.map(owner => owner.username)}`);
+    !slack && print(story.url);
   });
 }
 
 // use paginate with a map function so we can handle more than 250 commits
-// The result is an array of strings, even if multiple pages are returned
-// - need a git token with something like `content:read`
+// The result is an array of commits, even if multiple pages are returned
+// There is additional compareInfo returned in the first response including
+// the base_commit, merge_base_commit, and list of changed files
+let firstResponse = true;
+let compareInfo;
 const commits = await octokit.paginate(
   octokit.repos.compareCommits, 
   {
@@ -112,19 +148,29 @@ const commits = await octokit.paginate(
     base: gitBase,
     head: gitHead
   },
-  (response) => response.data.commits.map(commit => ({
-    message: commit.commit.message.split("\n", 1)[0],
-    sha: commit.sha,
-    date: commit.commit.author.date
-  }))
+  (response) => {
+    if (firstResponse) {
+      const {commits, ...everythingElse} = response.data;
+      compareInfo = everythingElse;
+      firstResponse = false;
+    }
+    return response.data.commits.map(commit => ({
+      message: commit.commit.message.split("\n", 1)[0],
+      sha: commit.sha,
+      date: commit.commit.author.date
+    }));
+  }
 );
   
 if ( commits.length < 1 ) {
-  console.log("No commits found!");
-  process.exit(0);
+  console.log("No commits found");
 }
-const oldestCommitDate = commits[0].date;
-const prCommits = commits.filter(commit => commit.message.includes("#"));
+if ( !compareInfo || !compareInfo.merge_base_commit) {
+  console.error("Did not get valid compareInfo", {compareInfo});
+  process.exit(1);
+}
+
+const mergeBaseCommitDate = compareInfo.merge_base_commit.commit.author.date;
 
 // Get pull requests using pull request specific API
 // - need a token with `pull_requests:read` permission
@@ -133,6 +179,7 @@ const prCommits = commits.filter(commit => commit.message.includes("#"));
 //   oldest commit, and then they were squashed merged. In this case their
 //   single merge commit would leave a trail of old commits that would be
 //   included in the list of commits.
+let loggedFirstPR = false;
 const prs = await octokit.paginate(
   octokit.pulls.list,
   {
@@ -146,10 +193,13 @@ const prs = await octokit.paginate(
     // 30 PRs are requested at a time, the `done()` will prevent paginate
     // from continuing to the request more PRs once it finds one that was 
     // updated before the oldest commit
-    if(pr.updated_at < oldestCommitDate) {
+    if(pr.updated_at < mergeBaseCommitDate) {
       done();
     }
-    // console.log(pr);
+    if (!loggedFirstPR) {
+      // console.log(util.inspect(pr, {depth: 5, colors: true}));
+      loggedFirstPR = true;
+    }
     return {
       updated_at: pr.updated_at,
       html_url: pr.html_url,
@@ -158,26 +208,85 @@ const prs = await octokit.paginate(
       merged_at: pr.merged_at,
       merge_commit_sha: pr.merge_commit_sha,
       number: pr.number,
-      labels: pr.labels.map(label => label.name)
+      user: pr.user.login,
+      labels: pr.labels.map(label => label.name),
+      requested_reviewers: pr.requested_reviewers.map(reviewer => reviewer.login)
     };
   }) 
 )
-const updatedPrs = prs.filter(pr => pr.updated_at >= oldestCommitDate );
+
+// Print the first PR
+// console.log(util.inspect(prs[0], {depth: 5, colors: true}));
+
+
+// Using our typical pattern of comparing [previous version]...master,
+// the mergeBaseCommit will be a commit that was part of the previous release.
+// So we try to skip the PR that resulted in that commit by using `>` instead `>=`.
+const updatedPrs = prs.filter(pr => pr.updated_at > mergeBaseCommitDate );
+
+// We look for the reviews of all of the prs we downloaded.
+// If a PR isn't merged yet, it might not be updated after the merge base
+// FIXME: this means we might not be downloading some PRs that we should.
+for (const pr of prs) {
+  const response = await octokit.pulls.listReviews({
+    owner: "concord-consortium",
+    repo: gitRepo,
+    pull_number: pr.number
+  })
+  // if (pr.number == 2211) {
+  //   console.log(response);
+  // }
+  pr.reviews = response.data.map(review => ({
+    user: review.user.login,
+    body: review.body,
+    state: review.state,
+    submitted_at: review.submitted_at,
+    commit_id: review.commit_id
+  }));
+}
+
+// Print the first updated PR
+// console.log(util.inspect(updatedPrs[0], {depth: 5, colors: true}));
+
+// Note: the mergeBaseCommit is not included in `commits`, so mergedPrs should 
+// not include the previous PR even if the filtering above doesn't exclude it.
 const mergedPrs = updatedPrs.filter(
   pr => commits.find(commit => commit.sha === pr.merge_commit_sha)
 );
 
+function prNumber(pr) {
+  if (slack) {
+    return `[#${pr.number}]:(${pr.html_url})`;
+  } else {
+    return `#${pr.number}`;
+  }
+}
+
+function printPrReviewSummary(pr) {
+  if (!pr.reviews?.length) return;
+  const reviewMap = {};
+  pr.reviews.forEach(review => reviewMap[review.user] = review.state);
+  const reviewStatuses = Object.entries(reviewMap).map(([key,value]) => `${key}|${value}`)
+  print(`reviews: ${reviewStatuses.join(", ")}`);
+
+}
+
 function logPR(pr) {
-  print(`${pr.number}: ${pr.title}`);
+  print(`${prNumber(pr)}: ${pr.title}`);
   indent(() => {
-    print(pr.html_url);
+    !slack && print(pr.html_url);
+    print(`user: ${pr.user}`);
     if (pr.merged_at) {
       print(`merged_at: ${pr.merged_at}`);
-    }  
+    }
+    if (pr.requested_reviewers?.length) {
+      print(`requested_reviewers: ${pr.requested_reviewers}`);
+    }
+    printPrReviewSummary(pr);
   });
 }
 
-print(`commit date range: ${commits[0].date} - ${commits[commits.length-1].date}`);
+print(`commit date range: ${mergeBaseCommitDate} - ${commits[commits.length-1]?.date}`);
 print(`found ${updatedPrs.length} PRs updated after the oldest commit`);
 print(`found ${mergedPrs.length} PRs with merge commits`);
 
@@ -189,7 +298,7 @@ const iconMap = {
 function logList({header, icons, list, logItem}) {
   print("");
   if (list.length > 0) {
-    print(`${icons.notEmpty} ${header}`);
+    print(`${icons.notEmpty} ${header} (${list.length})`);
     list.forEach(logItem);
   } else {
     print(`${icons.empty} No ${header}`);
@@ -210,7 +319,11 @@ logList({
   logItem: logPR
 });
 
-// logList({header: "Updated PRs", list: updatedPrs, logItem: logPR);
+// logList({
+//   header: "Updated PRs",
+//   icons: iconMap.required,
+//   list: updatedPrs, 
+//   logItem: logPR});
 
 // If a PR doesn't have a story, it won't show up in the output of the release-notes script.
 logList({
