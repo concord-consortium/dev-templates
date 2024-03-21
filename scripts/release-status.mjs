@@ -105,6 +105,11 @@ function storyPrsSummary(story) {
   return story.pull_requests.map(pr => pr.number);
 }
 
+function storyPRPath(storyPr) {
+  const {owner, repo, number} = storyPr;
+  return `${owner}/${repo}/${number}`;
+}
+
 function reviewSummary(story) {
   if (story.reviews.length === 0) {
     return "none";
@@ -123,14 +128,29 @@ function printTasks(story) {
   print(`Unfinished Tasks: ${unfinishedTasks.length}`);
 }
 
-function logStory(story) {
+function logStory(story, expandPRs = false) {
   logStoryShort(story);
   indent(() => {
-    print(`PRs: ${storyPrsSummary(story)}, State: ${story.current_state}`);
+    !slack && print(story.url);
+    print(`State: ${story.current_state}`);
     print(`Reviews: ${reviewSummary(story)}`);
     printTasks(story);
     print(`Owners: ${story.owners.map(owner => owner.username)}`);
-    !slack && print(story.url);
+    if (expandPRs && story.pull_requests?.length) {
+      print("PRs:");
+      indent(() => {
+        story.pull_requests.forEach(storyPr => {
+          if (storyPr.ghPr) {
+            logPR(storyPr.ghPr);
+          } else {
+            print(`Missing PR: ${storyPRPath(storyPr)}`);
+          }
+        })
+  
+      })
+    } else {
+      print(`PRs: ${storyPrsSummary(story)}`)
+    }
   });
 }
 
@@ -245,6 +265,31 @@ for (const pr of prs) {
   }));
 }
 
+// Add the github PR to the story PR to help with filtering and logging
+function addGitHubPRToStoryPR(storyPr) {
+  if (storyPr.owner !== "concord-consortium" || storyPr.repo !== gitRepo) {
+    // This will happen for stories that span multiple repositories. It might
+    // be better to just indicate them in logged lists
+    console.warn("Story linked to PR in a different repo", storyPr);
+    return;
+  }
+
+  const ghPr = prs.find(pr => (pr.number === storyPr.number));
+  if (!ghPr) {
+    // It is possible in some cases we won't have fetched this PR because of
+    // how the dates are currently filtered. If this happens a lot then we 
+    // can fix the filtering, or use a single PR fetch to get the GitHub PR
+    console.warn("Cannot find PR that story is linked to", storyPr);
+    return;
+  }
+
+  storyPr.ghPr = ghPr;
+}
+
+stories.forEach(story => {
+  story.pull_requests?.forEach(addGitHubPRToStoryPR);
+});
+
 // Print the first updated PR
 // console.log(util.inspect(updatedPrs[0], {depth: 5, colors: true}));
 
@@ -309,7 +354,7 @@ logList({
   header: `Stories with "${ptLabel}" `,
   icons: iconMap.required,
   list: stories, 
-  logItem: logStory
+  logItem: story => logStory(story)
 });
 
 logList({
@@ -343,7 +388,21 @@ logList({
   header: `Stories with "${ptLabel}" without PRs`, 
   icons: iconMap.shouldBeEmpty,
   list: stories.filter(story => ! story.pull_requests?.length), 
-  logItem: logStory
+  logItem: story => logStory(story)
+});
+
+// If there is an accepted story with an open PR we missed something
+logList({
+  header: "Accepted stories with open or unknown PRs", 
+  icons: iconMap.shouldBeEmpty,
+  list: stories.filter(story => 
+    story.current_state === "accepted" &&
+    story.pull_requests?.length &&
+    story.pull_requests.find(storyPR => 
+      !storyPR.ghPr || storyPR.ghPr.state === "open"
+    )
+  ),
+  logItem: story => logStory(story, true)
 });
 
 // In most cases we shouldn't be do a release when there are un accepted stories.
@@ -351,45 +410,8 @@ logList({
   header: `Un Accepted stories with "${ptLabel}"`, 
   icons: iconMap.shouldBeEmpty,
   list: stories.filter(story => (story.current_state !== "accepted")), 
-  logItem: logStory
+  logItem: story => logStory(story, true)
 });
-
-// Open PRs linked to stories
-// If the story still has an open PR we can't make the release candidate branch
-const storyPRs = [];
-stories.forEach(story => {
-  story.pull_requests?.forEach(storyPr => {
-    storyPRs.push(storyPr);
-  });
-})
-const openStoryPRs = storyPRs.filter(storyPr => {
-  if (storyPr.owner !== "concord-consortium" || storyPr.repo !== gitRepo) {
-    console.warn("Story linked to PR in a different repo", storyPr);
-    return false;
-  }
-
-  const ghPr = prs.find(pr => (pr.number === storyPr.number));
-  if (!ghPr) {
-    console.warn("Cannot find PR that story is linked to", storyPr);
-    return false;
-  }
-
-  // Add the github PR to the story Pr to make logging easier
-  storyPr.ghPr = ghPr;
-  return ghPr.state === "open";
-});
-logList({
-  header: "Open PRs linked to stories", 
-  icons: iconMap.shouldBeEmpty,
-  list: openStoryPRs, 
-  logItem: storyPr => {
-    const story = stories.find(_story => _story.id == storyPr.story_id);
-    logStoryShort(story);
-    indent(() => {
-      logPR(storyPr.ghPr);
-    })
-  }
-})
 
 // TODO: there could be PRs that are open that we might want to merge but
 // they aren't linked to a story. So to be safe we might want to list the 
