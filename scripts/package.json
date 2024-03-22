@@ -12,7 +12,8 @@
     "release-notes": "node release-notes.mjs",
     "release-status": "node release-status.mjs",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "gh:test": "node test-github.mjs"
+    "test-github": "node test-github.mjs",
+    "test-pivotal": "node test-pivotal.mjs"
   },
   "keywords": [],
   "author": "",

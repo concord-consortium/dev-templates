@@ -8,7 +8,7 @@ const features = [];
 const bugs = [];
 const underTheHood = [];
 
-function isUndoTheHood(story) {
+function isUnderTheHood(story) {
   return story.labels.find(label => label.name === "under-the-hood");
 }
 
@@ -20,7 +20,10 @@ async function collectStories(projectId, search) {
   );
 
   // Documentation of this API is here: https://www.pivotaltracker.com/help/api/rest/v5#Search
-  const url = `https://www.pivotaltracker.com/services/v5/projects/${projectId}/search?${urlQuery}`
+  // story_type,description,name,id,labels
+  const storyFields = `id,name,story_type,description,labels`;
+  const fields = `fields=stories(stories(${storyFields}))`;
+  const url = `https://www.pivotaltracker.com/services/v5/projects/${projectId}/search?${fields}&${urlQuery}`
 
   const response = await fetch(url, {
     headers: { 'X-TrackerToken': ptToken }
@@ -28,7 +31,7 @@ async function collectStories(projectId, search) {
   const json = await response.json();
   const stories = json.stories.stories
   for (const story of stories) {
-    if (isUndoTheHood(story)) {
+    if (isUnderTheHood(story)) {
       underTheHood.push(story);
     } else {
       if (story.story_type === "feature") {
@@ -51,11 +54,19 @@ await collectStories(orangeProjectId, search)
 await collectStories(tealProjectId, search)
 await collectStories(codapProjectId, search)
 
+function storyText(story) {
+  const blurbMatch = story.description?.match(/\*\*Blurb:\*\* (.*)/);
+  if (blurbMatch?.length === 2) {
+    return blurbMatch[1];
+  }
+  return story.name.replace(/\*\*\[[^\]]*\]\*\* ?/, "").trim();
+}
+
 function storyItem(story) {
-  const name = story.name.replace(/\*\*\[[^\]]*\]\*\* ?/, "").trim();
+  const text = storyText(story);
   return slack 
-    ? `*[PT-${story.id}](https://pivotaltracker.com/story/show/${story.id}):* ${name}` 
-    : `**PT-${story.id}:** ${name}`;
+    ? `*[PT-${story.id}](https://pivotaltracker.com/story/show/${story.id}):* ${text}` 
+    : `**PT-${story.id}:** ${text}`;
 }
 
 const prefix = slack ? '> ' : '';
