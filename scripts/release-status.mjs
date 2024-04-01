@@ -320,7 +320,7 @@ function logPR(pr) {
   print(`${prNumber(pr)}: ${pr.title}`);
   indent(() => {
     !slack && print(pr.html_url);
-    print(`user: ${pr.user}`);
+    print(`author: ${pr.user}`);
     if (pr.merged_at) {
       print(`merged_at: ${pr.merged_at}`);
     }
