@@ -375,10 +375,12 @@ logList({
 //   logItem: logPR});
 
 // If a PR doesn't have a story, it won't show up in the output of the release-notes script.
+// We exclude long lived PRs from this list since they are composed of multiple other PRs
 logList({
   header: `Merged PRs without a story labeled with ${ptLabel}`, 
   icons: iconMap.shouldBeEmpty,
   list: mergedPrs.filter(pr =>
+    ! pr.labels.includes("long lived branch") &&
     ! stories.find(story => 
       story.pull_requests.find(storyPr => 
         storyPr.number == pr.number))), 
