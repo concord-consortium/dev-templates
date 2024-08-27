@@ -212,7 +212,11 @@ const prs = await octokit.paginate(
   (response, done) => response.data.map((pr) => {
     // 30 PRs are requested at a time, the `done()` will prevent paginate
     // from continuing to the request more PRs once it finds one that was 
-    // updated before the oldest commit
+    // updated before the oldest commit.
+    //
+    // FIXME: when a long running branch is used, a PR could be merged into this
+    // long running branch before mergeBaseCommitDate. If this PR is not updated
+    // after that it will get excluded from the list.
     if(pr.updated_at < mergeBaseCommitDate) {
       done();
     }

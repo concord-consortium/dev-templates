@@ -43,6 +43,9 @@ https://github.com/concord-consortium/collaborative-learning/compare/<base>...<h
 
 To use this to check a release you'll want to use the previous release tag as the base.
 
+### Unsupported Workflow
+When a PR's changes are merged into the main/master branch and it also merged into a version branch. In this case, the story needs to be labeled with both releases so that it doesn't show up in the release status "missing PR" list. However this means the story will then show up in the release notes for both releases. Since the release notes are supposed to just list new things, this isn't accurate. 
+
 ## Test GitHub
 
 This is a script to download and print out information we can get from GitHub to help with releases. The script looks at the commits between two git tags or branches, and then looks for PRs with merge commits in that list of commits.
