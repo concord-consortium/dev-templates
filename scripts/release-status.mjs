@@ -143,7 +143,7 @@ function logStory(story, expandPRs = false) {
           if (storyPr.ghPr) {
             logPR(storyPr.ghPr);
           } else {
-            print(`Missing PR: ${storyPRPath(storyPr)}`);
+            print(`${storyPr.ghPrMissingReason || "Missing"} PR: ${storyPRPath(storyPr)}`);
           }
         })
   
@@ -275,6 +275,7 @@ function addGitHubPRToStoryPR(storyPr) {
     // This will happen for stories that span multiple repositories. It might
     // be better to just indicate them in logged lists
     console.warn("Story linked to PR in a different repo", storyPr);
+    storyPr.ghPrMissingReason = "External"
     return;
   }
 
@@ -284,6 +285,7 @@ function addGitHubPRToStoryPR(storyPr) {
     // how the dates are currently filtered. If this happens a lot then we 
     // can fix the filtering, or use a single PR fetch to get the GitHub PR
     console.warn("Cannot find PR that story is linked to", storyPr);
+    storyPr.ghPrMissingReason = "Missing"
     return;
   }
 
@@ -341,7 +343,8 @@ print(`found ${mergedPrs.length} PRs with merge commits`);
 
 const iconMap = {
   shouldBeEmpty: {empty: "✅", notEmpty: "❌" },
-  required: {empty: "❌", notEmpty: "✅"}
+  required: {empty: "❌", notEmpty: "✅"},
+  warnIfNotEmpty: {empty: "✅", notEmpty: "❗️" },
 }
 
 function logList({header, icons, list, logItem}) {
@@ -399,13 +402,26 @@ logList({
 
 // If there is an accepted story with an open PR we missed something
 logList({
-  header: "Accepted stories with open or unknown PRs", 
+  header: "Accepted stories with unknown PRs", 
+  icons: iconMap.warnIfNotEmpty,
+  list: stories.filter(story => 
+    story.current_state === "accepted" &&
+    story.pull_requests?.length &&
+    story.pull_requests.find(storyPR => 
+      !storyPR.ghPr
+    )
+  ),
+  logItem: story => logStory(story, true)
+});
+
+logList({
+  header: "Accepted stories with open PRs", 
   icons: iconMap.shouldBeEmpty,
   list: stories.filter(story => 
     story.current_state === "accepted" &&
     story.pull_requests?.length &&
     story.pull_requests.find(storyPR => 
-      !storyPR.ghPr || storyPR.ghPr.state === "open"
+      storyPR.ghPr?.state === "open"
     )
   ),
   logItem: story => logStory(story, true)
