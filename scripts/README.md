@@ -36,9 +36,17 @@ For GitHub markdown formatting, run it with:
 
     npm run release-notes-jira <jira project key> <jira label>
 
+Example:
+
+    npm run release-notes-jira LARA v5.0.0
+
 For Slack markdown formatting, run it with:
 
     npm run release-notes-jira <jira project key> <jira label> slack
+
+Example:
+
+    npm run release-notes-jira LARA v5.0.0 slack
 
 ## Release Status
 

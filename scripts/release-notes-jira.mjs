@@ -25,6 +25,15 @@ if (!jiraUser || !jiraToken) {
   process.exit(1);
 }
 
+const jiraProjectKey = process.argv[2];
+const jiraLabel = process.argv[3];
+const slack = process.argv?.[4];
+
+if (!jiraProjectKey || !jiraLabel) {
+  console.error("Both a Jira project key and a Jira label value are required.\n\nUsage:\n\n`npm run release-notes-jira LARA lara-5.0.0` or\n`node release-notes-jira.mjs LARA lara-5.0.0`\n");
+  process.exit(1);
+}
+
 const features = [];
 const bugs = [];
 const underTheHood = [];
@@ -66,9 +75,6 @@ async function collectStories(projectKey, search) {
   }
 }
 
-const jiraProjectKey = process.argv[2];
-const jiraLabel = process.argv[3];
-const slack = process.argv?.[4];
 await collectStories(jiraProjectKey, jiraLabel);
 
 function storyText(story) {
