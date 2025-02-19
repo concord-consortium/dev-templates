@@ -25,6 +25,21 @@ For Slack markdown formatting, run it with:
 
     npm run release-notes <pt label> slack
 
+### Jira Version
+
+To run the Jira version of this script, you need a [Jira personal access token](https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html). Add the token to a `.env` file in the scripts folder with
+
+    JIRA_TOKEN=<token>
+    JIRA_USER=<your jira account email address>
+
+For GitHub markdown formatting, run it with:
+
+    npm run release-notes-jira <jira project key> <jira label>
+
+For Slack markdown formatting, run it with:
+
+    npm run release-notes-jira <jira project key> <jira label> slack
+
 ## Release Status
 
 This uses Pivotal Tracker and GitHub to find the stories and PRs related to the release. To run it you'll need a token from Pivotal and a token from GitHub. You can make a GitHub fine grain access token so it can't be abused or a just use a regular GitHub token. If you use a fine grain token, it has to have permission to read the repository content and the pull requests.  
