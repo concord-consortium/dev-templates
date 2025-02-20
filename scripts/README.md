@@ -66,6 +66,32 @@ https://github.com/concord-consortium/collaborative-learning/compare/<base>...<h
 
 To use this to check a release you'll want to use the previous release tag as the base.
 
+### Jira Version
+
+The Jira version of this script will only list all PRs that have been merged in since the last release that don't have a linked Jira issue. All other information provided by the PT version can be found in a project's Releases view in the Jira UI.
+
+To run the script, you need a [Jira personal access token](https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html). Add the token to a `.env` file in the scripts folder with
+
+    JIRA_TOKEN=<token>
+    JIRA_USER=<your jira account email address>
+
+You'll also need to add a GitHub token. You can make a GitHub fine grain access token so it can't be abused or a just use a regular GitHub token. If you use a fine grain token, it has to have permission to read the repository content and the pull requests.
+
+    GITHUB_TOKEN=<token>
+
+Run the script with
+
+    npm run release-status-jira <jira project key> <jira fix version> <github repo> <base ref> <head ref>
+
+Example:
+
+    npm run release-status-jira LARA "LARA v5.0.0" lara v4.9.1 v5.0.0
+
+The base and head refs are the same that would be used here in a github compare link. Like: 
+https://github.com/concord-consortium/collaborative-learning/compare/<base>...<head>
+
+To use this to check a release you'll want to use the previous release tag as the base.
+
 ### Unsupported Workflow
 When a PR's changes are merged into the main/master branch and it also merged into a version branch. In this case, the story needs to be labeled with both releases so that it doesn't show up in the release status "missing PR" list. However this means the story will then show up in the release notes for both releases. Since the release notes are supposed to just list new things, this isn't accurate. 
 
