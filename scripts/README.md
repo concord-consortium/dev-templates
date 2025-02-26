@@ -25,6 +25,29 @@ For Slack markdown formatting, run it with:
 
     npm run release-notes <pt label> slack
 
+### Jira Version
+
+To run the Jira version of this script, you need a [Jira personal access token](https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html). Add the token to a `.env` file in the scripts folder with
+
+    JIRA_TOKEN=<token>
+    JIRA_USER=<your jira account email address>
+
+For GitHub markdown formatting, run it with:
+
+    npm run release-notes-jira <jira project key> <jira fix version>
+
+Example:
+
+    npm run release-notes-jira LARA "LARA v5.0.0"
+
+For Slack markdown formatting, run it with:
+
+    npm run release-notes-jira <jira project key> <jira fix version> slack
+
+Example:
+
+    npm run release-notes-jira LARA "LARA v5.0.0" slack
+
 ## Release Status
 
 This uses Pivotal Tracker and GitHub to find the stories and PRs related to the release. To run it you'll need a token from Pivotal and a token from GitHub. You can make a GitHub fine grain access token so it can't be abused or a just use a regular GitHub token. If you use a fine grain token, it has to have permission to read the repository content and the pull requests.  
@@ -37,6 +60,32 @@ The two tokens have to be added `.env` file in the scripts folder:
 Run the script with
 
     npm run release-status <pt label> <github repo> <base ref> <head ref>
+
+The base and head refs are the same that would be used here in a github compare link. Like: 
+https://github.com/concord-consortium/collaborative-learning/compare/<base>...<head>
+
+To use this to check a release you'll want to use the previous release tag as the base.
+
+## Unlinked PRs
+
+Lists all PRs that have been merged in since the last release that don't have a linked Jira issue.
+
+To run the script, you need a [Jira personal access token](https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html). Add the token to a `.env` file in the scripts folder with
+
+    JIRA_TOKEN=<token>
+    JIRA_USER=<your jira account email address>
+
+You'll also need to add a GitHub token. You can make a GitHub fine grain access token so it can't be abused or a just use a regular GitHub token. If you use a fine grain token, it has to have permission to read the repository content and the pull requests.
+
+    GITHUB_TOKEN=<token>
+
+Run the script with
+
+    npm run unlinked-prs <jira project key> <jira fix version> <github repo> <base ref> <head ref>
+
+Example:
+
+    npm run unlinked-prs LARA "LARA v5.0.0" lara v4.9.1 v5.0.0
 
 The base and head refs are the same that would be used here in a github compare link. Like: 
 https://github.com/concord-consortium/collaborative-learning/compare/<base>...<head>

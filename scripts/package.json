@@ -10,10 +10,13 @@
   },
   "scripts": {
     "release-notes": "node release-notes.mjs",
+    "release-notes-jira": "node release-notes-jira.mjs",
     "release-status": "node release-status.mjs",
     "test": "echo \"Error: no test specified\" && exit 1",
     "test-github": "node test-github.mjs",
-    "test-pivotal": "node test-pivotal.mjs"
+    "test-pivotal": "node test-pivotal.mjs",
+    "test-jira": "node test-jira.mjs",
+    "unlinked-prs": "node unlinked-prs.mjs"
   },
   "keywords": [],
   "author": "",
