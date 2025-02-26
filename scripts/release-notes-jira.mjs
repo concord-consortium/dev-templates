@@ -3,13 +3,13 @@
  * 
  * Required command-line parameters:
  * - Jira project key (e.g., "LARA")
- * - Jira label for filtering stories (e.g., "lara-5.0.0")
+ * - Jira fix version for filtering issues (e.g., "LARA v5.0.0")
  * 
  * Optional command-line parameters:
  * - "slack" to format output for Slack
  * 
  * Example usage:
- * node release-notes-jira.mjs LARA lara-5.0.0 slack
+ * node release-notes-jira.mjs LARA "LARA v5.0.0" slack
  */
 
 import "dotenv/config"
@@ -26,11 +26,11 @@ if (!jiraUser || !jiraToken) {
 }
 
 const jiraProjectKey = process.argv[2];
-const jiraLabel = process.argv[3];
+const jiraFixVersion = process.argv[3];
 const slack = process.argv?.[4];
 
-if (!jiraProjectKey || !jiraLabel) {
-  console.error("Both a Jira project key and a Jira label value are required.\n\nUsage:\n\n`npm run release-notes-jira LARA lara-5.0.0` or\n`node release-notes-jira.mjs LARA lara-5.0.0`\n");
+if (!jiraProjectKey || !jiraFixVersion) {
+  console.error("Both a Jira project key and a Jira fix version value are required.\n\nUsage:\n\n`npm run release-notes-jira LARA \"LARA v5.0.0\"` or\n`node release-notes-jira.mjs LARA \"LARA v5.0.0\"`\n");
   process.exit(1);
 }
 
@@ -42,9 +42,9 @@ function isUnderTheHood(story) {
   return story.fields.labels.find(label => label === "under-the-hood");
 }
 
-async function collectStories(projectKey, search) {
+async function collectStories(projectKey, jiraFixVersion) {
   const fields = ["id", "summary", "issuetype", "description", "labels"].join(",");
-  const jql = `project=${projectKey} AND issuetype in (Story, Bug) AND status in (Done, Closed) AND labels in (${search})`;
+  const jql = `project=${projectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug) AND status in (Done, Closed)`;
   const urlQuery = querystring.stringify({
     jql,
     fields,
@@ -56,8 +56,8 @@ async function collectStories(projectKey, search) {
   const json = await response.json();
   const stories = json.issues;
 
-  if (stories.length === 0) {
-    console.error(`No stories found for project ${projectKey} with label ${search}`);
+  if (!stories || stories.length === 0) {
+    console.error(`No stories found for project ${projectKey} with fix version ${jiraFixVersion}`);
     process.exit(1);
   }
 
@@ -75,7 +75,7 @@ async function collectStories(projectKey, search) {
   }
 }
 
-await collectStories(jiraProjectKey, jiraLabel);
+await collectStories(jiraProjectKey, jiraFixVersion);
 
 function storyText(story) {
   const blurbText = extractBlurbText(story.fields.description.content);
