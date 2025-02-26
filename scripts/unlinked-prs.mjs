@@ -9,7 +9,7 @@
  * - GitHub head ref (e.g., "v5.0.0")
  * 
  * Example usage:
- * node release-status-jira.mjs LARA "LARA v2.15.0" lara v4.9.1 v5.0.0
+ * node unlinked-prs.mjs LARA "LARA v5.0.0" lara v4.9.1 v5.0.0
  */
 
 import "dotenv/config";

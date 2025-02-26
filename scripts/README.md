@@ -66,9 +66,9 @@ https://github.com/concord-consortium/collaborative-learning/compare/<base>...<h
 
 To use this to check a release you'll want to use the previous release tag as the base.
 
-### Jira Version
+## Unlinked PRs
 
-The Jira version of this script will only list all PRs that have been merged in since the last release that don't have a linked Jira issue. All other information provided by the PT version can be found in a project's Releases view in the Jira UI.
+Lists all PRs that have been merged in since the last release that don't have a linked Jira issue.
 
 To run the script, you need a [Jira personal access token](https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html). Add the token to a `.env` file in the scripts folder with
 
@@ -81,11 +81,11 @@ You'll also need to add a GitHub token. You can make a GitHub fine grain access 
 
 Run the script with
 
-    npm run release-status-jira <jira project key> <jira fix version> <github repo> <base ref> <head ref>
+    npm run unlinked-prs <jira project key> <jira fix version> <github repo> <base ref> <head ref>
 
 Example:
 
-    npm run release-status-jira LARA "LARA v5.0.0" lara v4.9.1 v5.0.0
+    npm run unlinked-prs LARA "LARA v5.0.0" lara v4.9.1 v5.0.0
 
 The base and head refs are the same that would be used here in a github compare link. Like: 
 https://github.com/concord-consortium/collaborative-learning/compare/<base>...<head>
