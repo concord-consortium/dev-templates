@@ -34,19 +34,19 @@ To run the Jira version of this script, you need a [Jira personal access token](
 
 For GitHub markdown formatting, run it with:
 
-    npm run release-notes-jira <jira project key> <jira label>
+    npm run release-notes-jira <jira project key> <jira fix version>
 
 Example:
 
-    npm run release-notes-jira LARA v5.0.0
+    npm run release-notes-jira LARA "LARA v5.0.0"
 
 For Slack markdown formatting, run it with:
 
-    npm run release-notes-jira <jira project key> <jira label> slack
+    npm run release-notes-jira <jira project key> <jira fix version> slack
 
 Example:
 
-    npm run release-notes-jira LARA v5.0.0 slack
+    npm run release-notes-jira LARA "LARA v5.0.0" slack
 
 ## Release Status
 
