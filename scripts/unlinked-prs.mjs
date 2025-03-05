@@ -108,12 +108,35 @@ async function getMergedPRs() {
       sort: "updated",
       direction: "desc"
     },
-    (response) => {
+    (response, done) => {
       return response.data
-        .filter(pr => pr.merged_at && pr.merged_at > mergeBaseCommitDate)
+        .filter(pr => {
+          // FIXME: when a long running branch is used, a PR could be merged into this
+          // long running branch before mergeBaseCommitDate. If this PR is not updated
+          // after that it will get excluded from the list. However we also don't want
+          // to check every PR in the repository because it makes the script slow.
+          //
+          // The updated_at field is used instead of merged_at just to pick up a few 
+          // more PRs. If a PR was merged into a long running branch before the previous
+          // version was tagged, using the merged_at time means we'll never pick up this
+          // PR. With updated_at if a developer modifies the PR before the release, now
+          // the PR will be picked up by the script.
+          //
+          // A better approach would be to iterate over the commits and identify any 
+          // PR merge commits and then make sure their PRs are in the list.
+          const possiblyPartOfRelease = pr.updated_at >= mergeBaseCommitDate
+
+          // 30 PRs are requested at a time, the `done()` will prevent paginate
+          // from continuing to the request more PRs once it finds one that was 
+          // updated before the oldest commit. This prevents the script from running too
+          // slowly.
+          if (!possiblyPartOfRelease) done();
+          return possiblyPartOfRelease
+        })
         .map(pr => ({
           number: pr.number,
           merged_at: pr.merged_at,
+          merge_commit_sha: pr.merge_commit_sha,
           html_url: pr.html_url,
           title: pr.title,
           user: pr.user.login
@@ -121,14 +144,27 @@ async function getMergedPRs() {
     }
   );
 
-  return prs;
+  return {commits, prs};
 }
 
 async function getUnlinkedMergedPRs() {
-  const [jiraPRs, mergedPRs] = await Promise.all([
+  const [jiraPRs, {commits, prs}] = await Promise.all([
     getJiraLinkedPRs(),
     getMergedPRs()
   ]);
+
+  // We find the merged PRs by looking to see if the PR's merge_commit_sha is part
+  // of the commits since the last version was released. This is more accurate than
+  // looking at the merged_at or updated_at time of the PR. A PR could be merged
+  // into a long running branch different than main or master. And then this 
+  // long running branch might not be merged into main or master for a few releases.
+  // 
+  // Note: the mergeBaseCommit is not included in `commits`, so mergedPrs will 
+  // not include the last PR of the previous version even if the filtering 
+  // above doesn't exclude it.
+  const mergedPRs = prs.filter(
+    pr => commits.find(commit => commit.sha === pr.merge_commit_sha)
+  );
 
   const unlinkedPRs = mergedPRs.filter(pr => !jiraPRs.has(pr.number));
 
