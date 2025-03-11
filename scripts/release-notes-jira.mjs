@@ -1,13 +1,13 @@
 /**
  * Generates release notes from completed Jira stories and bugs.
- * 
+ *
  * Required command-line parameters:
  * - Jira project key (e.g., "LARA")
  * - Jira fix version for filtering issues (e.g., "LARA v5.0.0")
- * 
+ *
  * Optional command-line parameters:
  * - "slack" to format output for Slack
- * 
+ *
  * Example usage:
  * node release-notes-jira.mjs LARA "LARA v5.0.0" slack
  */
@@ -70,7 +70,7 @@ async function collectStories(projectKey, jiraFixVersion) {
       }
       if (story.fields.issuetype.name === "Bug") {
         bugs.push(story);
-      }  
+      }
     }
   }
 }
@@ -78,7 +78,7 @@ async function collectStories(projectKey, jiraFixVersion) {
 await collectStories(jiraProjectKey, jiraFixVersion);
 
 function storyText(story) {
-  const blurbText = extractBlurbText(story.fields.description.content);
+  const blurbText = extractBlurbText(story.fields.description?.content ?? []);
   if (blurbText) {
     return blurbText;
   }
@@ -87,8 +87,8 @@ function storyText(story) {
 
 function storyItem(story) {
   const text = storyText(story);
-  return slack 
-    ? `*[${story.key}](${jiraApiBaseUrl}/browse/${story.key}):* ${text}` 
+  return slack
+    ? `*[${story.key}](${jiraApiBaseUrl}/browse/${story.key}):* ${text}`
     : `**${story.key}:** ${text}`;
 }
 
@@ -111,7 +111,7 @@ function printSection(msg, stories) {
       print(`- ${storyItem(story)}`);
     }
     print("");
-  }  
+  }
 }
 
 printSection("✨ Features & Improvements:", features);
