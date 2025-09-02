@@ -15,7 +15,7 @@
 import "dotenv/config"
 import fetch from "node-fetch";
 import querystring from "querystring";
-import { extractBlurbText, jiraApiBaseUrl, jiraRequestHeaders } from "./utils.mjs";
+import { extractBlurbText, jiraBaseUrl, jiraApiBaseUrl, jiraRequestHeaders } from "./utils.mjs";
 
 const jiraUser = process.env.JIRA_USER;
 const jiraToken = process.env.JIRA_TOKEN;
@@ -88,7 +88,7 @@ function storyText(story) {
 function storyItem(story) {
   const text = storyText(story);
   return slack
-    ? `*[${story.key}](${jiraApiBaseUrl}/browse/${story.key}):* ${text}`
+    ? `*[${story.key}](${jiraBaseUrl}/browse/${story.key}):* ${text}`
     : `**${story.key}:** ${text}`;
 }
 

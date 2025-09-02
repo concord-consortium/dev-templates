@@ -1,5 +1,6 @@
-export const jiraApiBaseUrl = "https://concord-consortium.atlassian.net/rest/api/3";
-export const jiraDevApiBaseUrl = "https://concord-consortium.atlassian.net/rest/dev-status/1.0";
+export const jiraBaseUrl = "https://concord-consortium.atlassian.net";
+export const jiraApiBaseUrl = `${jiraBaseUrl}/rest/api/3`;
+export const jiraDevApiBaseUrl = `${jiraBaseUrl}/rest/dev-status/1.0`;
 
 export function extractBlurbText(contentArray) {
   for (const paragraph of contentArray) {
