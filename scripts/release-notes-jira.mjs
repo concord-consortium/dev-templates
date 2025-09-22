@@ -50,7 +50,7 @@ async function collectStories(projectKey, jiraFixVersion) {
     fields,
     maxResults: 100
   });
-  const url = `${jiraApiBaseUrl}/search?${urlQuery}`;
+  const url = `${jiraApiBaseUrl}/search/jql?${urlQuery}`;
   const requestHeaders = jiraRequestHeaders(jiraUser, jiraToken);
   const response = await fetch(url, requestHeaders);
   const json = await response.json();

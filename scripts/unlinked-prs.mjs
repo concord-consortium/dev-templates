@@ -1,13 +1,13 @@
 /**
  * Compiles a list of all PRs merged since the last release that do not have a linked Jira issue.
- * 
+ *
  * Required command-line parameters:
  * - Jira project key (e.g., "LARA")
  * - Jira fix version (e.g., "LARA v5.0.0")
  * - GitHub repo name (e.g., "lara")
  * - GitHub base ref (e.g., "v4.9.1")
  * - GitHub head ref (e.g., "v5.0.0")
- * 
+ *
  * Example usage:
  * node unlinked-prs.mjs LARA "LARA v5.0.0" lara v4.9.1 v5.0.0
  */
@@ -46,7 +46,7 @@ async function getJiraLinkedPRs() {
     maxResults: 100
   });
 
-  const url = `${jiraApiBaseUrl}/search?${urlQuery}`;
+  const url = `${jiraApiBaseUrl}/search/jql?${urlQuery}`;
   const requestHeaders = jiraRequestHeaders(jiraUser, jiraToken);
   const response = await fetch(url, requestHeaders);
   const json = await response.json();
@@ -116,18 +116,18 @@ async function getMergedPRs() {
           // after that it will get excluded from the list. However we also don't want
           // to check every PR in the repository because it makes the script slow.
           //
-          // The updated_at field is used instead of merged_at just to pick up a few 
+          // The updated_at field is used instead of merged_at just to pick up a few
           // more PRs. If a PR was merged into a long running branch before the previous
           // version was tagged, using the merged_at time means we'll never pick up this
           // PR. With updated_at if a developer modifies the PR before the release, now
           // the PR will be picked up by the script.
           //
-          // A better approach would be to iterate over the commits and identify any 
+          // A better approach would be to iterate over the commits and identify any
           // PR merge commits and then make sure their PRs are in the list.
           const possiblyPartOfRelease = pr.updated_at >= mergeBaseCommitDate
 
           // 30 PRs are requested at a time, the `done()` will prevent paginate
-          // from continuing to the request more PRs once it finds one that was 
+          // from continuing to the request more PRs once it finds one that was
           // updated before the oldest commit. This prevents the script from running too
           // slowly.
           if (!possiblyPartOfRelease) done();
@@ -156,11 +156,11 @@ async function getUnlinkedMergedPRs() {
   // We find the merged PRs by looking to see if the PR's merge_commit_sha is part
   // of the commits since the last version was released. This is more accurate than
   // looking at the merged_at or updated_at time of the PR. A PR could be merged
-  // into a long running branch different than main or master. And then this 
+  // into a long running branch different than main or master. And then this
   // long running branch might not be merged into main or master for a few releases.
-  // 
-  // Note: the mergeBaseCommit is not included in `commits`, so mergedPrs will 
-  // not include the last PR of the previous version even if the filtering 
+  //
+  // Note: the mergeBaseCommit is not included in `commits`, so mergedPrs will
+  // not include the last PR of the previous version even if the filtering
   // above doesn't exclude it.
   const mergedPRs = prs.filter(
     pr => commits.find(commit => commit.sha === pr.merge_commit_sha)
