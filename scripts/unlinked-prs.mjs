@@ -49,8 +49,24 @@ async function getJiraLinkedPRs() {
   const url = `${jiraApiBaseUrl}/search/jql?${urlQuery}`;
   const requestHeaders = jiraRequestHeaders(jiraUser, jiraToken);
   const response = await fetch(url, requestHeaders);
+
+  if (response.status === 401) {
+    console.error("❌ Jira authentication failed. Your JIRA_TOKEN may be expired or invalid.");
+    console.error("   Please generate a new API token at: https://id.atlassian.com/manage-profile/security/api-tokens");
+    process.exit(1);
+  }
+
+  if (!response.ok) {
+    console.error(`❌ Jira API request failed with status ${response.status}: ${response.statusText}`);
+    process.exit(1);
+  }
+
   const json = await response.json();
   const jiraPRs = new Set();
+
+  if (!json.issues) {
+    console.error("❌ No issues found in Jira response.", json);
+  }
 
   await Promise.all(json.issues.map(async (issue, index) => {
     try {
@@ -165,6 +181,16 @@ async function getUnlinkedMergedPRs() {
   const mergedPRs = prs.filter(
     pr => commits.find(commit => commit.sha === pr.merge_commit_sha)
   );
+
+  console.log(`🔍 Found ${mergedPRs.length} PRs merged between ${gitBase} and ${gitHead}.`);
+  mergedPRs.forEach(pr => {
+    console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+  });
+
+  console.log(`\n🔍 Found ${jiraPRs.size} PRs linked to Jira issues in project ${jiraProjectKey} with fix version "${jiraFixVersion}".`);
+  jiraPRs.forEach(prNumber => {
+    console.log(`- jiraPR #${prNumber}`);
+  });
 
   const unlinkedPRs = mergedPRs.filter(pr => !jiraPRs.has(pr.number));
 
