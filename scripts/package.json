@@ -9,6 +9,7 @@
     "node-fetch": "^2.6.1"
   },
   "scripts": {
+    "pr-review-comments": "node pr-review-comments.mjs",
     "release-notes": "node release-notes.mjs",
     "release-notes-jira": "node release-notes-jira.mjs",
     "release-status": "node release-status.mjs",
