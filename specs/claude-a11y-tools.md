@@ -29,7 +29,7 @@ A set of Claude Code tools that developers can use in any repo by referencing th
 ## Implementation Phases
 
 ### Phase 1: Foundation
-- Create skill directory structure (`.claude/skills/cc-a11y/`)
+- Create skill directory structure (`claude/skills/cc-a11y/`)
 - Create `SKILL.md` with verb routing logic
 - Implement branch safety check for `fix` verb
 
@@ -74,11 +74,11 @@ A set of Claude Code tools that developers can use in any repo by referencing th
 
 Claude Code uses **skills** (directories with `SKILL.md`) rather than single command files. Each skill directory contains the main instructions plus supporting resources.
 
-All components will be placed in this repo at `.claude/skills/cc-a11y/` as a single skill with verb-based routing:
+All components will be placed in this repo at `claude/skills/cc-a11y/` as a single skill with verb-based routing:
 
 ```
 dev-templates/
-└── .claude/
+└── claude/
     └── skills/
         └── cc-a11y/
             ├── SKILL.md              # Main skill with verb routing (review, fix, report)
@@ -130,7 +130,10 @@ The `review` and `report` verbs are read-only and can run on any branch.
 - `--commit <ref>`: Review all files changed in a specific commit (e.g., `HEAD`, `abc123`)
 - `--scope <glob>`: Limit to specific paths (e.g., `src/components/**`, `"src/**/*.tsx"`, `"{src,lib}/**"` for multiple directories - note quotes for special characters)
 - `--severity <level>`: Minimum severity to report. Ordering: critical > serious > moderate > minor (e.g., `--severity serious` reports serious and critical only)
-- `--output <path>`: Save report to file (automatically prepends date in ISO 8601 format YYYY-MM-DD, e.g., `report.md` becomes `2024-01-15-report.md`)
+- `--output <path>`: Save report to file. Behavior:
+  - Automatically prepends date in ISO 8601 format (e.g., `report.md` becomes `2024-01-15-report.md`)
+  - Automatically appends `.md` extension if not present (e.g., `report` becomes `2024-01-15-report.md`)
+  - If no folder is specified, saves to `a11y/` folder (e.g., `report.md` becomes `a11y/2024-01-15-report.md`)
 - `--fix`: Automatically fix issues after review (prompts for approval unless `--auto` is also specified). Equivalent to running `review` then `fix` in sequence.
 - `--ignore-file <path>`: Path to file listing issues to ignore (default: `.a11yignore` if present)
 
@@ -144,7 +147,7 @@ The `review` and `report` verbs are read-only and can run on any branch.
 /cc-a11y review --commit HEAD                # Review files in last commit
 /cc-a11y review --commit abc123              # Review files in specific commit
 /cc-a11y review --repo --scope src/**        # Audit src directory only
-/cc-a11y review --repo --output report.md    # Saves as 2024-01-15-report.md
+/cc-a11y review --repo --output report.md    # Saves as a11y/2024-01-15-report.md
 /cc-a11y review --fix                        # Review and fix current file
 /cc-a11y review --branch --fix               # Review and fix all branch changes
 ```
@@ -220,7 +223,7 @@ claude /cc-a11y review --repo --severity serious
 
 ### Critical Issues (0)
 ### Serious Issues (2)
-- **Missing form labels** (WCAG 1.3.1, 4.1.2) `#f3a1`
+- [ ] **Missing form labels** (WCAG 1.3.1, 4.1.2) `#f3a1`
   - Line 45: `<input type="text">` lacks associated label
   - Recommendation: Add `<label>` element or aria-label attribute
 
@@ -250,7 +253,7 @@ claude /cc-a11y review --repo --severity serious
 - When using `--from`, automatically updates the report to mark fixed issues
 
 **Arguments**:
-- No additional args: Fix all issues in current file
+- No additional args: Fix all issues in current file. If existing review reports are found in the `a11y/` folder, prompts the user to select one or proceed without.
 - `--from <path>`: Read issues from a review report file (and update it when fixed)
 - `--line <number>`: Fix issue at specific line only
 - `--critical`: Fix only critical issues
@@ -264,6 +267,17 @@ claude /cc-a11y review --repo --severity serious
 /cc-a11y fix --line 45             # Fix issue at line 45
 /cc-a11y fix --from report.md      # Fix issues from report and mark as fixed
 ```
+
+**Auto-Discovery of Reports**:
+When running `/cc-a11y fix` without `--from`, the skill checks the `a11y/` folder for existing review reports. If found, it prompts:
+```
+Found existing review reports:
+  1. a11y/2024-01-15-a11y-review.md (12 issues, 3 fixed)
+  2. a11y/2024-01-10-a11y-review.md (8 issues, 8 fixed)
+
+Use a report? [1/2/n]: _
+```
+Selecting a report is equivalent to using `--from`. Selecting `n` proceeds with a fresh review of the current file.
 
 **Interactive Mode** (`--interactive`):
 ```
@@ -295,10 +309,10 @@ Proposed: Add aria-label="Search" to <input>
 ```
 
 **Report Update Format**:
-When `--from` is used, the review report file is automatically updated. Fixed issues are marked with strikethrough:
+When `--from` is used, the review report file is automatically updated. Fixed issues are marked with a checked checkbox:
 ```
-- ~~**Missing form labels** (WCAG 1.3.1, 4.1.2) `#f3a1`~~ ✓ Fixed [2024-01-15]
-  - ~~Line 45: `<input type="text">` lacks associated label~~
+- [x] **Missing form labels** (WCAG 1.3.1, 4.1.2) `#f3a1` ✓ Fixed [2024-01-15]
+  - Line 45: `<input type="text">` lacks associated label
 ```
 
 The output will also note:
@@ -322,13 +336,16 @@ Updated report: a11y-review.md (3 issues marked as fixed)
 
 **Arguments**:
 - No additional args: Generate report to stdout
-- `--output <path>`: Save report to file (automatically prepends date in ISO 8601 format YYYY-MM-DD)
+- `--output <path>`: Save report to file. Behavior:
+  - Automatically prepends date in ISO 8601 format YYYY-MM-DD
+  - Automatically appends `.md` extension if not present
+  - If no folder is specified, saves to `a11y/` folder
 - `--from <path>`: Base report on existing review output file
 
 **Example Usage**:
 ```
 /cc-a11y report                    # Generate compliance report
-/cc-a11y report --output compliance.md  # Saves as 2024-01-15-compliance.md
+/cc-a11y report --output compliance.md  # Saves as a11y/2024-01-15-compliance.md
 ```
 
 **Output Format**:
@@ -386,7 +403,7 @@ git clone git@github.com:concord-consortium/dev-templates.git ~/dev-templates
 mkdir -p ~/.claude/skills
 
 # Symlink the skill directory to global location
-ln -s ~/dev-templates/.claude/skills/cc-a11y ~/.claude/skills/
+ln -s ~/dev-templates/claude/skills/cc-a11y ~/.claude/skills/
 ```
 
 **Updating**: When the team updates the skills, developers just run `git pull` in their `~/dev-templates` directory. Symlinks automatically pick up changes.
@@ -404,7 +421,7 @@ If global installation isn't desired, copy skills to a specific project:
 ```bash
 # From project root
 mkdir -p .claude/skills
-cp -r ~/dev-templates/.claude/skills/cc-a11y .claude/skills/
+cp -r ~/dev-templates/claude/skills/cc-a11y .claude/skills/
 ```
 
 ---
@@ -441,8 +458,8 @@ Uses exit codes (see Exit Codes section above) to block commits when issues are 
 ```
 1. Developer finishes feature branch
 2. Runs `/cc-a11y review --branch --output a11y-review.md`
-3. Reviews generated report (saved as 2024-01-15-a11y-review.md)
-4. Runs `/cc-a11y fix --from 2024-01-15-a11y-review.md`
+3. Reviews generated report (saved as a11y/2024-01-15-a11y-review.md)
+4. Runs `/cc-a11y fix --from a11y/2024-01-15-a11y-review.md`
 5. Creates PR with a11y-clean code
 ```
 
@@ -458,7 +475,7 @@ Uses exit codes (see Exit Codes section above) to block commits when issues are 
 
 ## Resource Files
 
-All resources are co-located in the `cc-a11y/` skill directory. SKILL.md can reference them with relative paths like `[wcag-checklist.md](wcag-checklist.md)` and Claude will auto-load them.
+All resources are co-located in the `claude/skills/cc-a11y/` skill directory. SKILL.md can reference them with relative paths like `[wcag-checklist.md](wcag-checklist.md)` and Claude will auto-load them.
 
 Each resource file follows a consistent structure to enable reliable parsing.
 
