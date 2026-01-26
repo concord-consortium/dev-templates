@@ -52,11 +52,10 @@ A set of Claude Code tools that developers can use in any repo by referencing th
 - Add exit codes for scripting
 
 ### Phase 5: Fix Verb
-- Implement basic fix functionality for current file
+- Implement basic fix functionality for current file (auto-apply by default)
 - Add `--from` to read issues from saved reports
 - Implement report update (strikethrough fixed issues)
 - Add `--interactive` mode with apply/skip/edit options
-- Add `--auto` mode for unattended fixes
 
 ### Phase 6: Report Verb
 - Implement compliance report generation
@@ -134,7 +133,7 @@ The `review` and `report` verbs are read-only and can run on any branch.
   - Automatically prepends date in ISO 8601 format (e.g., `report.md` becomes `2024-01-15-report.md`)
   - Automatically appends `.md` extension if not present (e.g., `report` becomes `2024-01-15-report.md`)
   - If no folder is specified, saves to `a11y/` folder (e.g., `report.md` becomes `a11y/2024-01-15-report.md`)
-- `--fix`: Automatically fix issues after review (prompts for approval unless `--auto` is also specified). Equivalent to running `review` then `fix` in sequence.
+- `--fix`: Automatically fix issues after review (applies fixes without prompting). Equivalent to running `review` then `fix` in sequence.
 - `--ignore-file <path>`: Path to file listing issues to ignore (default: `.a11yignore` if present)
 
 **Example Usage**:
@@ -161,6 +160,7 @@ The `review` and `report` verbs are read-only and can run on any branch.
 ```
 
 File filtering:
+- **No file limit**: All matching files are processed regardless of count
 - Respects `.gitignore` (excludes `node_modules/`, build outputs, etc.)
 - Filters to supported file types only (see Behavior section)
 - Excludes binary files
@@ -253,12 +253,11 @@ claude /cc-a11y review --repo --severity serious
 - When using `--from`, automatically updates the report to mark fixed issues
 
 **Arguments**:
-- No additional args: Fix all issues in current file. If existing review reports are found in the `a11y/` folder, prompts the user to select one or proceed without.
+- No additional args: Fix all issues in current file automatically (no prompts). If existing review reports are found in the `a11y/` folder, prompts the user to select one or proceed without.
 - `--from <path>`: Read issues from a review report file (and update it when fixed)
 - `--line <number>`: Fix issue at specific line only
 - `--critical`: Fix only critical issues
-- `--interactive`: Step through each fix one by one
-- `--auto`: Apply fixes without prompting for approval
+- `--interactive`: Step through each fix one by one with apply/skip/edit options
 
 **Example Usage**:
 ```
@@ -644,5 +643,5 @@ format_version: "1.0"
 1. **CI/CD Integration**: Not in scope - this is a developer tool only
 2. **Tech Stack**: React-focused (no Vue/Angular variants needed)
 3. **Architecture**: Simple skill approach (no MCP server)
-4. **Fix Approval**: Require approval by default, with `--auto` option to skip prompts
+4. **Fix Behavior**: Apply fixes automatically by default, with `--interactive` option for step-by-step control
 5. **IDE Support**: Designed for VSCode with Claude Code extension. "Current file" and "selection" features require IDE integration; CLI-only users should specify file paths explicitly.

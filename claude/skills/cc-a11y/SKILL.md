@@ -170,6 +170,8 @@ Generate the report in the standard output format, organized by severity.
 
 When a git mode flag is provided (`--staged`, `--changed`, `--branch`, `--commit`), review multiple files based on git state.
 
+**Note:** There is no limit to the number of files that can be reviewed. All matching files will be processed regardless of count.
+
 **Step 1: Get File List**
 
 Use the appropriate git command based on the mode:
@@ -237,6 +239,8 @@ See "Output Format (Multi-File Mode)" section below.
 ### Repo Mode Review
 
 When `--repo` flag is provided, perform a full repository audit.
+
+**Note:** There is no limit to the number of files that can be reviewed. All supported files in the repository will be processed regardless of count.
 
 **Step 1: Discover Files**
 
@@ -730,12 +734,11 @@ Reference these files for review criteria:
 
 | Argument | Description |
 |----------|-------------|
-| (none) | Fix all issues in current file. If existing review reports are found in `a11y/`, prompts user to select one or proceed without. |
+| (none) | Fix all issues in current file automatically (no prompts). If existing review reports are found in `a11y/`, prompts user to select one or proceed without. |
 | `--from <path>` | Read issues from a review report file |
 | `--line <number>` | Fix issue at specific line only |
 | `--critical` | Fix only critical issues |
-| `--interactive` | Step through each fix one by one |
-| `--auto` | Apply fixes without prompting for approval |
+| `--interactive` | Step through each fix one by one with apply/skip/edit options |
 
 ---
 
@@ -831,9 +834,10 @@ Rationale:
 
 Behavior depends on mode:
 
-- **Default mode**: Show each fix proposal, ask for confirmation, apply if approved
-- **Interactive mode** (`--interactive`): Step through fixes one-by-one with options
-- **Auto mode** (`--auto`): Apply all fixes without confirmation
+- **Default mode**: Apply all fixes automatically without prompting (same as `--auto`)
+- **Interactive mode** (`--interactive`): Step through fixes one-by-one with apply/skip/edit options
+
+Note: Issues that cannot be auto-fixed (e.g., requiring context-specific content like alt text) are skipped and listed in the output.
 
 **Step 6: Report Results**
 
@@ -969,15 +973,15 @@ Apply this edit? [y/n]
 
 ---
 
-### Auto Mode (`--auto`)
+### Default Fix Behavior
 
-Apply all fixes without user confirmation. Use with caution.
+By default, fixes are applied automatically without prompting. Use `--interactive` for step-by-step control.
 
 **Behavior:**
 1. Perform branch safety check (still enforced)
 2. Identify all issues
 3. Generate fixes for each
-4. Apply ALL fixes automatically
+4. Apply all fixes automatically
 5. Output summary
 
 **Safeguards:**
@@ -990,9 +994,9 @@ Apply all fixes without user confirmation. Use with caution.
 - Fix requires context-specific content (e.g., alt text description)
 - Code structure is too complex to auto-fix safely
 
-**Auto Mode Output:**
+**Default Output:**
 ```markdown
-## Accessibility Fixes Applied (Auto Mode): SearchBar.tsx
+## Accessibility Fixes Applied: SearchBar.tsx
 
 ### Changes Made (2)
 1. **Line 45**: Added `aria-label="Search"` to input
@@ -2006,9 +2010,8 @@ Use this checklist to verify the skill is working correctly:
 ### Fix Verb
 
 - [ ] Branch safety check blocks fixes on main/master
-- [ ] Default mode prompts for approval
+- [ ] Default mode applies fixes automatically without prompting
 - [ ] `--interactive` shows apply/skip/edit/quit options
-- [ ] `--auto` applies without prompting
 - [ ] `--from` reads issues from report file
 - [ ] Report is updated with strikethrough when fixing from report
 - [ ] Fixes preserve file functionality
