@@ -39,12 +39,14 @@ const bugs = [];
 const underTheHood = [];
 
 function isUnderTheHood(story) {
-  return story.fields.labels.find(label => label === "under-the-hood");
+  return story.fields.issuetype.name === "Chore" ||
+    story.fields.issuetype.name === "Task" ||
+    story.fields.labels.find(label => label === "under-the-hood");
 }
 
 async function collectStories(projectKey, jiraFixVersion) {
   const fields = ["id", "summary", "issuetype", "description", "labels"].join(",");
-  const jql = `project=${projectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug) AND status in (Done, Closed)`;
+  const jql = `project=${projectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore, Task) AND status in (Done, Closed)`;
   const urlQuery = querystring.stringify({
     jql,
     fields,

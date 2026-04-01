@@ -42,7 +42,7 @@ const octokit = new Octokit({ auth: ghToken });
 
 async function getJiraLinkedPRs() {
   const urlQuery = querystring.stringify({
-    jql: `project=${jiraProjectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore)`,
+    jql: `project=${jiraProjectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore, Task)`,
     maxResults: 100
   });
 
@@ -84,6 +84,22 @@ async function getJiraLinkedPRs() {
             console.warn(`Skipping invalid PR ID format (${storyPr.id}) for issue ${issue.key} with title ${issue.fields.summary}`);
           }
         });
+      }
+
+      // Also check web links (remote links) for GitHub PR URLs.
+      // This catches PRs that were linked manually after the fact.
+      const remoteLinksUrl = `${jiraApiBaseUrl}/issue/${issue.id}/remotelink`;
+      const remoteLinksResponse = await fetch(remoteLinksUrl, requestHeaders);
+      if (remoteLinksResponse.ok) {
+        const remoteLinks = await remoteLinksResponse.json();
+        for (const link of remoteLinks) {
+          const linkUrl = link.object?.url;
+          if (!linkUrl) continue;
+          const prMatch = linkUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+          if (prMatch && prMatch[1] === `concord-consortium/${gitRepo}`) {
+            jiraPRs.add(parseInt(prMatch[2], 10));
+          }
+        }
       }
     } catch (error) {
       console.error(`Error fetching PRs for Jira issue ${issue.key}:`, error);
@@ -155,7 +171,9 @@ async function getMergedPRs() {
           merge_commit_sha: pr.merge_commit_sha,
           html_url: pr.html_url,
           title: pr.title,
-          user: pr.user.login
+          user: pr.user?.login ?? "unknown",
+          body: pr.body || "",
+          branch: pr.head?.ref || ""
         }));
     }
   );
@@ -194,11 +212,105 @@ async function getUnlinkedMergedPRs() {
 
   const unlinkedPRs = mergedPRs.filter(pr => !jiraPRs.has(pr.number));
 
+  // For unlinked PRs, check if they reference a Jira issue that was already
+  // released in a previous version (e.g. hotfixes merged into both a release
+  // branch and master).
+  const issueKeyPattern = new RegExp(`${jiraProjectKey}-(\\d+)`, "g");
+  const requestHeaders = jiraRequestHeaders(jiraUser, jiraToken);
+
+  const classificationResults = await Promise.all(
+    unlinkedPRs.map(async (pr) => {
+      const searchText = `${pr.title} ${pr.body} ${pr.branch}`;
+      const issueKeys = [...new Set(
+        [...searchText.matchAll(issueKeyPattern)].map(m => m[0])
+      )];
+
+      if (issueKeys.length === 0) {
+        return { type: "trulyUnlinked", pr };
+      }
+
+      // Check all referenced issues — only classify as previously released if
+      // none of the referenced issues include the current fixVersion.
+      let bestPreviousRelease = null;
+      let hasCurrentVersion = false;
+
+      for (const issueKey of issueKeys) {
+        try {
+          const issueUrl = `${jiraApiBaseUrl}/issue/${issueKey}?fields=fixVersions,summary`;
+          const issueResponse = await fetch(issueUrl, requestHeaders);
+          if (!issueResponse.ok) {
+            if (issueResponse.status === 401 || issueResponse.status === 403) {
+              console.warn(`⚠️  Auth/permission error (${issueResponse.status}) looking up ${issueKey} — classification may be incomplete.`);
+            } else {
+              console.warn(`⚠️  Failed to fetch ${issueKey} (${issueResponse.status}) — classification may be incomplete.`);
+            }
+            continue;
+          }
+          const issueData = await issueResponse.json();
+          const fixVersions = issueData.fields?.fixVersions || [];
+          const versionNames = fixVersions.map(v => v.name);
+
+          if (versionNames.includes(jiraFixVersion)) {
+            hasCurrentVersion = true;
+            break;
+          }
+
+          if (versionNames.length > 0 && !bestPreviousRelease) {
+            bestPreviousRelease = {
+              issueKey,
+              summary: issueData.fields?.summary,
+              versions: versionNames
+            };
+          }
+        } catch (error) {
+          console.warn(`⚠️  Error looking up ${issueKey}: ${error.message} — classification may be incomplete.`);
+        }
+      }
+
+      if (!hasCurrentVersion && bestPreviousRelease) {
+        return {
+          type: "previouslyReleased",
+          pr,
+          ...bestPreviousRelease
+        };
+      }
+
+      return { type: "trulyUnlinked", pr };
+    })
+  );
+
+  const previouslyReleased = [];
+  const trulyUnlinked = [];
+
+  for (const result of classificationResults) {
+    if (result.type === "previouslyReleased") {
+      previouslyReleased.push({
+        pr: result.pr,
+        issueKey: result.issueKey,
+        summary: result.summary,
+        versions: result.versions
+      });
+    } else {
+      trulyUnlinked.push(result.pr);
+    }
+  }
+
+  previouslyReleased.sort((a, b) => a.pr.number - b.pr.number);
+  trulyUnlinked.sort((a, b) => a.number - b.number);
+
+  if (previouslyReleased.length > 0) {
+    console.log(`\n📦 PRs Merged but have different fix versions:\n`);
+    previouslyReleased.forEach(({ pr, issueKey, summary, versions }) => {
+      console.log(`-  ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+      console.log(`   └─ ${issueKey}: ${summary} (fixVersion ${versions.join(", ")})`);
+    });
+  }
+
   console.log(`\n🔎 PRs Merged Since Last Release Without a Linked Jira Issue:\n`);
-  if (unlinkedPRs.length === 0) {
+  if (trulyUnlinked.length === 0) {
     console.log("✅ No untracked PRs found.");
   } else {
-    unlinkedPRs.forEach(pr => {
+    trulyUnlinked.forEach(pr => {
       console.log(`❌ ${pr.html_url} - ${pr.title} (by ${pr.user})`);
     });
   }
