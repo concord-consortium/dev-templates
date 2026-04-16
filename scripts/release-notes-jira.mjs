@@ -145,5 +145,8 @@ printSection("🛠 Under the Hood:", underTheHood);
 
 if (notDone.length > 0) {
   const keys = notDone.map(s => s.key).join(", ");
+  // Intentionally using console.log instead of print() so this line lacks
+  // the ">" prefix in Slack mode — it should stand out and not be pasted
+  // into Slack with the release notes.
   console.log(`⚠️ ${notDone.length} story(ies) not yet done: ${keys}`);
 }

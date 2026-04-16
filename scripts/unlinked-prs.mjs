@@ -266,12 +266,15 @@ async function getUnlinkedMergedPRs() {
   const allReferencedKeys = [...new Set(prReferencedKeys.flat())];
 
   const issueInfo = new Map();
-  if (allReferencedKeys.length > 0) {
-    const jql = `key in (${allReferencedKeys.join(",")})`;
+  // Jira caps JQL results at 100 per request, so fetch in chunks.
+  const chunkSize = 100;
+  for (let i = 0; i < allReferencedKeys.length; i += chunkSize) {
+    const chunk = allReferencedKeys.slice(i, i + chunkSize);
+    const jql = `key in (${chunk.join(",")})`;
     const jqlQuery = querystring.stringify({
       jql,
       fields: "fixVersions,summary,labels",
-      maxResults: 100
+      maxResults: chunkSize
     });
     const jqlUrl = `${jiraApiBaseUrl}/search/jql?${jqlQuery}`;
     const jqlResponse = await fetch(jqlUrl, requestHeaders);
@@ -284,12 +287,14 @@ async function getUnlinkedMergedPRs() {
           labels: issue.fields?.labels ?? []
         });
       }
-      const missing = allReferencedKeys.filter(k => !issueInfo.has(k));
-      if (missing.length > 0) {
-        console.warn(`⚠️  Could not resolve ${missing.length} referenced issue(s) via JQL: ${missing.join(", ")} — classification may be incomplete.`);
-      }
     } else {
-      console.warn(`⚠️  JQL classification lookup failed (${jqlResponse.status}) — all unlinked PRs will be reported as truly unlinked.`);
+      console.warn(`⚠️  JQL classification lookup failed (${jqlResponse.status}) — some unlinked PRs may be misclassified.`);
+    }
+  }
+  if (allReferencedKeys.length > 0) {
+    const missing = allReferencedKeys.filter(k => !issueInfo.has(k));
+    if (missing.length > 0) {
+      console.warn(`⚠️  Could not resolve ${missing.length} referenced issue(s) via JQL: ${missing.join(", ")} — classification may be incomplete.`);
     }
   }
 
