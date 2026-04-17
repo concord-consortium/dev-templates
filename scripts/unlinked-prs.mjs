@@ -40,6 +40,23 @@ const gitHead = process.argv[6];
 
 const octokit = new Octokit({ auth: ghToken });
 
+async function verifyJiraAuth() {
+  // /myself returns 401 cleanly when a token is expired or invalid,
+  // whereas search endpoints often return 200 with empty results instead.
+  // Check it first so we can fail with a clear message.
+  const url = `${jiraApiBaseUrl}/myself`;
+  const response = await fetch(url, jiraRequestHeaders(jiraUser, jiraToken));
+  if (response.status === 401) {
+    console.error("❌ Jira authentication failed. Your JIRA_TOKEN is expired or invalid.");
+    console.error("   Generate a new API token at: https://id.atlassian.com/manage-profile/security/api-tokens");
+    process.exit(1);
+  }
+  if (!response.ok) {
+    console.error(`❌ Jira /myself preflight failed with status ${response.status}: ${response.statusText}`);
+    process.exit(1);
+  }
+}
+
 async function getJiraLinkedPRs() {
   const urlQuery = querystring.stringify({
     jql: `project=${jiraProjectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore, Task)`,
@@ -64,8 +81,16 @@ async function getJiraLinkedPRs() {
   const json = await response.json();
   const jiraPRs = new Set();
 
-  if (!json.issues) {
-    console.error("❌ No issues found in Jira response.", json);
+  if (!json.issues || json.issues.length === 0) {
+    console.error(`❌ Jira returned 0 issues for project=${jiraProjectKey} fixVersion="${jiraFixVersion}".`);
+    console.error("   This usually means your JIRA_TOKEN lacks access to the project,");
+    console.error("   or the fixVersion name is wrong. The API returns 200 OK with empty");
+    console.error("   results instead of 401 in this case, so it can't be caught as an auth error.");
+    console.error("");
+    console.error("   To fix: regenerate a token with full account scope at");
+    console.error("   https://id.atlassian.com/manage-profile/security/api-tokens");
+    console.error("   and confirm the fixVersion name matches exactly what Jira shows.");
+    process.exit(1);
   }
 
   await Promise.all(json.issues.map(async (issue, index) => {
@@ -173,7 +198,8 @@ async function getMergedPRs() {
           title: pr.title,
           user: pr.user?.login ?? "unknown",
           body: pr.body || "",
-          branch: pr.head?.ref || ""
+          branch: pr.head?.ref || "",
+          labels: (pr.labels ?? []).map(l => l.name)
         }));
     }
   );
@@ -182,6 +208,8 @@ async function getMergedPRs() {
 }
 
 async function getUnlinkedMergedPRs() {
+  await verifyJiraAuth();
+
   const [jiraPRs, {commits, prs}] = await Promise.all([
     getJiraLinkedPRs(),
     getMergedPRs()
@@ -210,7 +238,16 @@ async function getUnlinkedMergedPRs() {
     console.log(`- jiraPR #${prNumber}`);
   });
 
-  const unlinkedPRs = mergedPRs.filter(pr => !jiraPRs.has(pr.number));
+  // PRs carrying the "long lived branch" label are umbrella merges of a
+  // long-running development branch whose individual changes are already
+  // tracked by their own Jira issues and PRs. Surface them separately rather
+  // than classifying them as unlinked.
+  const longLivedBranchPRs = mergedPRs.filter(
+    pr => pr.labels.includes("long lived branch") && !jiraPRs.has(pr.number)
+  );
+  const unlinkedPRs = mergedPRs.filter(
+    pr => !jiraPRs.has(pr.number) && !pr.labels.includes("long lived branch")
+  );
 
   // For unlinked PRs, check if they reference a Jira issue that was already
   // released in a previous version (e.g. hotfixes merged into both a release
@@ -218,68 +255,112 @@ async function getUnlinkedMergedPRs() {
   const issueKeyPattern = new RegExp(`${jiraProjectKey}-(\\d+)`, "g");
   const requestHeaders = jiraRequestHeaders(jiraUser, jiraToken);
 
-  const classificationResults = await Promise.all(
-    unlinkedPRs.map(async (pr) => {
-      const searchText = `${pr.title} ${pr.body} ${pr.branch}`;
-      const issueKeys = [...new Set(
-        [...searchText.matchAll(issueKeyPattern)].map(m => m[0])
-      )];
+  // Collect every referenced issue key across all unlinked PRs so we can
+  // fetch their fixVersions in a single JQL search. The direct /issue/{key}
+  // GET endpoint returns 404 for API tokens that can still run JQL searches,
+  // so batching through /search/jql is both more robust and faster.
+  const prReferencedKeys = unlinkedPRs.map(pr => {
+    const searchText = `${pr.title} ${pr.body} ${pr.branch}`;
+    return [...new Set([...searchText.matchAll(issueKeyPattern)].map(m => m[0]))];
+  });
+  const allReferencedKeys = [...new Set(prReferencedKeys.flat())];
 
-      if (issueKeys.length === 0) {
-        return { type: "trulyUnlinked", pr };
+  const issueInfo = new Map();
+  // Jira caps JQL results at 100 per request, so fetch in chunks.
+  const chunkSize = 100;
+  for (let i = 0; i < allReferencedKeys.length; i += chunkSize) {
+    const chunk = allReferencedKeys.slice(i, i + chunkSize);
+    const jql = `key in (${chunk.join(",")})`;
+    const jqlQuery = querystring.stringify({
+      jql,
+      fields: "fixVersions,summary,labels",
+      maxResults: chunkSize
+    });
+    const jqlUrl = `${jiraApiBaseUrl}/search/jql?${jqlQuery}`;
+    const jqlResponse = await fetch(jqlUrl, requestHeaders);
+    if (jqlResponse.ok) {
+      const jqlJson = await jqlResponse.json();
+      for (const issue of jqlJson.issues ?? []) {
+        issueInfo.set(issue.key, {
+          summary: issue.fields?.summary,
+          versionNames: (issue.fields?.fixVersions ?? []).map(v => v.name),
+          labels: issue.fields?.labels ?? []
+        });
       }
+    } else {
+      console.warn(`⚠️  JQL classification lookup failed (${jqlResponse.status}) — some unlinked PRs may be misclassified.`);
+    }
+  }
+  if (allReferencedKeys.length > 0) {
+    const missing = allReferencedKeys.filter(k => !issueInfo.has(k));
+    if (missing.length > 0) {
+      console.warn(`⚠️  Could not resolve ${missing.length} referenced issue(s) via JQL: ${missing.join(", ")} — classification may be incomplete.`);
+    }
+  }
 
-      // Check all referenced issues — only classify as previously released if
-      // none of the referenced issues include the current fixVersion.
-      let bestPreviousRelease = null;
-      let hasCurrentVersion = false;
+  const classificationResults = unlinkedPRs.map((pr, i) => {
+    const issueKeys = prReferencedKeys[i];
+    if (issueKeys.length === 0) {
+      return { type: "trulyUnlinked", pr };
+    }
 
-      for (const issueKey of issueKeys) {
-        try {
-          const issueUrl = `${jiraApiBaseUrl}/issue/${issueKey}?fields=fixVersions,summary`;
-          const issueResponse = await fetch(issueUrl, requestHeaders);
-          if (!issueResponse.ok) {
-            if (issueResponse.status === 401 || issueResponse.status === 403) {
-              console.warn(`⚠️  Auth/permission error (${issueResponse.status}) looking up ${issueKey} — classification may be incomplete.`);
-            } else {
-              console.warn(`⚠️  Failed to fetch ${issueKey} (${issueResponse.status}) — classification may be incomplete.`);
-            }
-            continue;
-          }
-          const issueData = await issueResponse.json();
-          const fixVersions = issueData.fields?.fixVersions || [];
-          const versionNames = fixVersions.map(v => v.name);
+    let bestPreviousRelease = null;
+    let currentVersionIssueKey = null;
+    let currentVersionHasNoRelease = false;
+    let noReleaseIssueKey = null;
+    let unversionedIssueKey = null;
 
-          if (versionNames.includes(jiraFixVersion)) {
-            hasCurrentVersion = true;
-            break;
-          }
-
-          if (versionNames.length > 0 && !bestPreviousRelease) {
-            bestPreviousRelease = {
-              issueKey,
-              summary: issueData.fields?.summary,
-              versions: versionNames
-            };
-          }
-        } catch (error) {
-          console.warn(`⚠️  Error looking up ${issueKey}: ${error.message} — classification may be incomplete.`);
-        }
+    for (const issueKey of issueKeys) {
+      const info = issueInfo.get(issueKey);
+      if (!info) continue;
+      if (info.versionNames.includes(jiraFixVersion)) {
+        currentVersionIssueKey = issueKey;
+        currentVersionHasNoRelease = info.labels.includes("no-release");
+        break;
       }
-
-      if (!hasCurrentVersion && bestPreviousRelease) {
-        return {
-          type: "previouslyReleased",
-          pr,
-          ...bestPreviousRelease
+      if (!noReleaseIssueKey && info.labels.includes("no-release")) {
+        noReleaseIssueKey = issueKey;
+      }
+      if (info.versionNames.length > 0 && !bestPreviousRelease) {
+        bestPreviousRelease = {
+          issueKey,
+          summary: info.summary,
+          versions: info.versionNames
         };
       }
+      if (!unversionedIssueKey && info.versionNames.length === 0 && !info.labels.includes("no-release")) {
+        unversionedIssueKey = issueKey;
+      }
+    }
 
-      return { type: "trulyUnlinked", pr };
-    })
-  );
+    if (currentVersionIssueKey) {
+      return {
+        type: "referencedCurrentVersion",
+        pr,
+        issueKey: currentVersionIssueKey,
+        noReleaseConflict: currentVersionHasNoRelease
+      };
+    }
+
+    if (noReleaseIssueKey) {
+      return { type: "noRelease", pr, issueKey: noReleaseIssueKey };
+    }
+
+    if (bestPreviousRelease) {
+      return { type: "previouslyReleased", pr, ...bestPreviousRelease };
+    }
+
+    if (unversionedIssueKey) {
+      return { type: "linkedNeedsAction", pr, issueKey: unversionedIssueKey };
+    }
+
+    return { type: "trulyUnlinked", pr };
+  });
 
   const previouslyReleased = [];
+  const referencedCurrentVersion = [];
+  const noReleaseLabeled = [];
+  const linkedNeedsAction = [];
   const trulyUnlinked = [];
 
   for (const result of classificationResults) {
@@ -290,12 +371,24 @@ async function getUnlinkedMergedPRs() {
         summary: result.summary,
         versions: result.versions
       });
+    } else if (result.type === "referencedCurrentVersion") {
+      referencedCurrentVersion.push({
+        pr: result.pr,
+        issueKey: result.issueKey,
+        noReleaseConflict: result.noReleaseConflict
+      });
+    } else if (result.type === "noRelease") {
+      noReleaseLabeled.push({ pr: result.pr, issueKey: result.issueKey });
+    } else if (result.type === "linkedNeedsAction") {
+      linkedNeedsAction.push({ pr: result.pr, issueKey: result.issueKey });
     } else {
       trulyUnlinked.push(result.pr);
     }
   }
 
   previouslyReleased.sort((a, b) => a.pr.number - b.pr.number);
+  referencedCurrentVersion.sort((a, b) => a.pr.number - b.pr.number);
+  linkedNeedsAction.sort((a, b) => a.pr.number - b.pr.number);
   trulyUnlinked.sort((a, b) => a.number - b.number);
 
   if (previouslyReleased.length > 0) {
@@ -304,6 +397,41 @@ async function getUnlinkedMergedPRs() {
       console.log(`-  ${pr.html_url} - ${pr.title} (by ${pr.user})`);
       console.log(`   └─ ${issueKey}: ${summary} (fixVersion ${versions.join(", ")})`);
     });
+  }
+
+  if (referencedCurrentVersion.length > 0) {
+    console.log(`\n🔗 PRs referencing a Jira issue with fixVersion "${jiraFixVersion}" (not auto-linked by Jira):\n`);
+    referencedCurrentVersion.forEach(({ pr, issueKey, noReleaseConflict }) => {
+      const conflict = noReleaseConflict ? ` ⚠️ (${issueKey} also labeled "no-release" — conflict)` : "";
+      console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})${conflict}`);
+    });
+  }
+
+  if (linkedNeedsAction.length > 0) {
+    console.log(`\n🗒  PRs linked to a Jira issue that has no fixVersion — assign "${jiraFixVersion}" or add the "no-release" label:\n`);
+    linkedNeedsAction.forEach(({ pr, issueKey }) => {
+      console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+      console.log(`   └─ ${issueKey}`);
+    });
+  }
+
+  if (noReleaseLabeled.length > 0) {
+    console.log(`\n🚫 PRs whose Jira issue is labeled "no-release" (skipped):\n`);
+    noReleaseLabeled
+      .sort((a, b) => a.pr.number - b.pr.number)
+      .forEach(({ pr, issueKey }) => {
+        console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+        console.log(`   └─ ${issueKey}`);
+      });
+  }
+
+  if (longLivedBranchPRs.length > 0) {
+    console.log(`\n🌿 Long-lived branch merges (skipped — individual work tracked elsewhere):\n`);
+    longLivedBranchPRs
+      .sort((a, b) => a.number - b.number)
+      .forEach(pr => {
+        console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+      });
   }
 
   console.log(`\n🔎 PRs Merged Since Last Release Without a Linked Jira Issue:\n`);

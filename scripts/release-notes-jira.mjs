@@ -37,6 +37,7 @@ if (!jiraProjectKey || !jiraFixVersion) {
 const features = [];
 const bugs = [];
 const underTheHood = [];
+const notDone = [];
 
 function isUnderTheHood(story) {
   return story.fields.issuetype.name === "Chore" ||
@@ -45,8 +46,8 @@ function isUnderTheHood(story) {
 }
 
 async function collectStories(projectKey, jiraFixVersion) {
-  const fields = ["id", "summary", "issuetype", "description", "labels"].join(",");
-  const jql = `project=${projectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore, Task) AND status in (Done, Closed)`;
+  const fields = ["id", "summary", "issuetype", "description", "labels", "parent", "status"].join(",");
+  const jql = `project=${projectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore, Task)`;
   const urlQuery = querystring.stringify({
     jql,
     fields,
@@ -64,6 +65,14 @@ async function collectStories(projectKey, jiraFixVersion) {
   }
 
   for (const story of stories) {
+    const isDone = story.fields.status?.statusCategory?.key === "done";
+    if (!isDone) {
+      notDone.push(story);
+    }
+    // A story with the current fixVersion should appear in the release notes.
+    // If it also carries the `no-release` label, that's a conflict worth
+    // surfacing — include it in its normal bucket so a human can decide,
+    // rather than silently dropping it.
     if (isUnderTheHood(story)) {
       underTheHood.push(story);
     } else {
@@ -89,9 +98,14 @@ function storyText(story) {
 
 function storyItem(story) {
   const text = storyText(story);
+  // Mark stories that have both the current fixVersion and the `no-release`
+  // label — that combination is contradictory and a human should resolve it.
+  const conflictMarker = story.fields.labels?.includes("no-release")
+    ? " ⚠️ (has `no-release` label — conflict)"
+    : "";
   return slack
-    ? `*[${story.key}](${jiraBaseUrl}/browse/${story.key}):* ${text}`
-    : `**${story.key}:** ${text}`;
+    ? `*[${story.key}](${jiraBaseUrl}/browse/${story.key}):* ${text}${conflictMarker}`
+    : `**${story.key}:** ${text}${conflictMarker}`;
 }
 
 const prefix = slack ? '> ' : '';
@@ -106,10 +120,19 @@ function printHeader(msg) {
   }
 }
 
+function sortByParent(stories) {
+  return stories.slice().sort((a, b) => {
+    const parentA = a.fields.parent?.key ?? "\uffff";
+    const parentB = b.fields.parent?.key ?? "\uffff";
+    if (parentA !== parentB) return parentA.localeCompare(parentB);
+    return a.key.localeCompare(b.key);
+  });
+}
+
 function printSection(msg, stories) {
   if (stories.length > 0) {
     printHeader(msg);
-    for (const story of stories) {
+    for (const story of sortByParent(stories)) {
       print(`- ${storyItem(story)}`);
     }
     print("");
@@ -119,3 +142,11 @@ function printSection(msg, stories) {
 printSection("✨ Features & Improvements:", features);
 printSection("🐞 Bug Fixes:", bugs);
 printSection("🛠 Under the Hood:", underTheHood);
+
+if (notDone.length > 0) {
+  const keys = notDone.map(s => s.key).join(", ");
+  // Intentionally using console.log instead of print() so this line lacks
+  // the ">" prefix in Slack mode — it should stand out and not be pasted
+  // into Slack with the release notes.
+  console.log(`⚠️ ${notDone.length} story(ies) not yet done: ${keys}`);
+}
