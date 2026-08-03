@@ -16,7 +16,7 @@ import "dotenv/config";
 import fetch from "node-fetch";
 import querystring from "querystring";
 import { Octokit } from "@octokit/rest";
-import { jiraApiBaseUrl, jiraDevApiBaseUrl, jiraRequestHeaders } from "./utils.mjs";
+import { jiraBaseUrl, jiraApiBaseUrl, jiraDevApiBaseUrl, jiraRequestHeaders } from "./utils.mjs";
 
 const jiraUser = process.env.JIRA_USER;
 const jiraToken = process.env.JIRA_TOKEN;
@@ -60,6 +60,7 @@ async function verifyJiraAuth() {
 async function getJiraLinkedPRs() {
   const urlQuery = querystring.stringify({
     jql: `project=${jiraProjectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore, Task)`,
+    fields: "summary",
     maxResults: 100
   });
 
@@ -80,6 +81,9 @@ async function getJiraLinkedPRs() {
 
   const json = await response.json();
   const jiraPRs = new Set();
+  // Maps each Jira issue key to { summary, prNumbers[] } so callers can
+  // check whether an issue's linked PRs actually landed in a given release.
+  const jiraIssuePRs = new Map();
 
   if (!json.issues || json.issues.length === 0) {
     console.error(`❌ Jira returned 0 issues for project=${jiraProjectKey} fixVersion="${jiraFixVersion}".`);
@@ -93,7 +97,13 @@ async function getJiraLinkedPRs() {
     process.exit(1);
   }
 
-  await Promise.all(json.issues.map(async (issue, index) => {
+  const idOnlyIssues = json.issues.filter(i => !i.key);
+  if (idOnlyIssues.length > 0) {
+    console.warn(`⚠️  ${idOnlyIssues.length} of ${json.issues.length} Jira issues returned without key/fields (ids: ${idOnlyIssues.map(i => i.id).join(", ")}). This is likely a permissions issue with the API token.`);
+  }
+
+  await Promise.all(json.issues.map(async (issue) => {
+    const issuePrNumbers = [];
     try {
       const prUrl = `${jiraDevApiBaseUrl}/issue/detail?issueId=${issue.id}&applicationType=GitHub&dataType=pullrequest`;
       const prResponse = await fetch(prUrl, requestHeaders);
@@ -105,6 +115,7 @@ async function getJiraLinkedPRs() {
           if (match) {
             const prNumber = parseInt(match[0], 10);
             jiraPRs.add(prNumber);
+            issuePrNumbers.push(prNumber);
           } else {
             console.warn(`Skipping invalid PR ID format (${storyPr.id}) for issue ${issue.key} with title ${issue.fields.summary}`);
           }
@@ -122,16 +133,26 @@ async function getJiraLinkedPRs() {
           if (!linkUrl) continue;
           const prMatch = linkUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
           if (prMatch && prMatch[1] === `concord-consortium/${gitRepo}`) {
-            jiraPRs.add(parseInt(prMatch[2], 10));
+            const prNumber = parseInt(prMatch[2], 10);
+            jiraPRs.add(prNumber);
+            issuePrNumbers.push(prNumber);
           }
         }
       }
     } catch (error) {
       console.error(`Error fetching PRs for Jira issue ${issue.key}:`, error);
     }
+    // Some issues only have `id` (no `key` or `fields`), likely due to
+    // restricted permissions. We still track them using `id` as the map key
+    // so we can detect unmerged PRs; the display label falls back to the id.
+    const issueLabel = issue.key ?? `id:${issue.id}`;
+    jiraIssuePRs.set(issueLabel, {
+      summary: issue.fields?.summary ?? issueLabel,
+      prNumbers: issuePrNumbers
+    });
   }));
 
-  return jiraPRs;
+  return { jiraPRs, jiraIssuePRs };
 }
 
 async function getMergedPRs() {
@@ -145,7 +166,9 @@ async function getMergedPRs() {
     },
     response => response.data.commits.map(commit => ({
       sha: commit.sha,
-      date: commit.commit.author.date
+      date: commit.commit.author.date,
+      message: commit.commit.message,
+      committer: commit.committer?.login
     }))
   );
 
@@ -210,7 +233,7 @@ async function getMergedPRs() {
 async function getUnlinkedMergedPRs() {
   await verifyJiraAuth();
 
-  const [jiraPRs, {commits, prs}] = await Promise.all([
+  const [{ jiraPRs, jiraIssuePRs }, {commits, prs}] = await Promise.all([
     getJiraLinkedPRs(),
     getMergedPRs()
   ]);
@@ -227,6 +250,198 @@ async function getUnlinkedMergedPRs() {
   const mergedPRs = prs.filter(
     pr => commits.find(commit => commit.sha === pr.merge_commit_sha)
   );
+
+  const prShape = pr => ({
+    number: pr.number,
+    merged_at: pr.merged_at,
+    merge_commit_sha: pr.merge_commit_sha,
+    html_url: pr.html_url,
+    title: pr.title,
+    user: pr.user?.login ?? "unknown",
+    body: pr.body || "",
+    branch: pr.head?.ref || "",
+    labels: (pr.labels ?? []).map(l => l.name)
+  });
+
+  // When a PR is squash-merged, GitHub creates a new commit whose message
+  // contains the PR title followed by the PR number, e.g. "Some title (#1234)".
+  // The committer is "web-flow" (GitHub). These commits won't match any
+  // merge_commit_sha from the PR listing, so we detect them from the commit
+  // message and fetch the PR to verify.
+  const mergedPRNumbers = new Set(mergedPRs.map(pr => pr.number));
+  const squashPrPattern = /\(#(\d+)\)\s*$/;
+
+  const squashCandidates = commits
+    .filter(c => c.committer === "web-flow" && squashPrPattern.test(c.message.split("\n")[0]))
+    .map(c => {
+      const match = c.message.split("\n")[0].match(squashPrPattern);
+      return { prNumber: parseInt(match[1], 10), commitSha: c.sha };
+    })
+    .filter(({ prNumber }) => !mergedPRNumbers.has(prNumber));
+
+  if (squashCandidates.length > 0) {
+    const squashPRs = await Promise.all(
+      squashCandidates.map(async ({ prNumber, commitSha }) => {
+        try {
+          const { data: pr } = await octokit.pulls.get({
+            owner: "concord-consortium",
+            repo: gitRepo,
+            pull_number: prNumber
+          });
+          // Verify the PR was actually merged and the squash commit SHA matches
+          // what GitHub recorded as the merge_commit_sha for this PR.
+          if (pr.merged && pr.merge_commit_sha === commitSha) {
+            return prShape(pr);
+          }
+        } catch (error) {
+          console.warn(`⚠️  Could not fetch PR #${prNumber} referenced in squash commit: ${error.message}`);
+        }
+        return null;
+      })
+    );
+
+    for (const pr of squashPRs) {
+      if (pr) {
+        mergedPRs.push(pr);
+        mergedPRNumbers.add(pr.number);
+      }
+    }
+  }
+
+  // When a PR is squash-merged, any sub-PRs that were merged into its branch
+  // are flattened into the squash commit. Their original merge_commit_sha is
+  // orphaned and won't appear in the gitBase..gitHead range. To find these
+  // sub-PRs, we list closed PRs that targeted each merged PR's head branch,
+  // then recurse in case sub-PRs themselves had sub-PRs.
+  let branchesToSearch = mergedPRs
+    .map(pr => pr.branch)
+    .filter(branch => branch);
+
+  while (branchesToSearch.length > 0) {
+    const subPRs = (await Promise.all(
+      branchesToSearch.map(async (branch) => {
+        try {
+          const { data } = await octokit.pulls.list({
+            owner: "concord-consortium",
+            repo: gitRepo,
+            state: "closed",
+            base: branch,
+            per_page: 100
+          });
+          return data
+            .filter(pr => pr.merged_at && !mergedPRNumbers.has(pr.number))
+            .map(prShape);
+        } catch (error) {
+          console.warn(`⚠️  Could not list sub-PRs for branch ${branch}: ${error.message}`);
+          return [];
+        }
+      })
+    )).flat();
+
+    if (subPRs.length === 0) break;
+
+    branchesToSearch = [];
+    for (const pr of subPRs) {
+      mergedPRs.push(pr);
+      mergedPRNumbers.add(pr.number);
+      if (pr.branch) branchesToSearch.push(pr.branch);
+    }
+  }
+
+  // Find Jira issues tagged with this fixVersion whose linked PRs have not
+  // been merged into gitHead. This surfaces stories that claim to be part of
+  // the release but whose code hasn't actually landed.
+  //
+  // PRs that were closed without merging don't count as "unmerged" — they
+  // shouldn't cause an issue to appear in this list. But if the issue appears
+  // for other reasons, closed PRs are still shown with a "closed" status.
+
+  // Collect all non-merged PR numbers across all issues and fetch their status
+  // in parallel so we know which are closed, merged before gitBase, or still open.
+  const allNonMergedPRs = new Set();
+  for (const [, { prNumbers }] of jiraIssuePRs) {
+    for (const n of prNumbers) {
+      if (!mergedPRNumbers.has(n)) allNonMergedPRs.add(n);
+    }
+  }
+  const closedPRNumbers = new Set();
+  const mergedBeforeBasePRNumbers = new Set();
+  const mergedAfterHeadPRNumbers = new Set();
+  if (allNonMergedPRs.size > 0) {
+    await Promise.all([...allNonMergedPRs].map(async (prNum) => {
+      try {
+        const { data: pr } = await octokit.pulls.get({
+          owner: "concord-consortium",
+          repo: gitRepo,
+          pull_number: prNum
+        });
+        if (pr.state === "closed" && !pr.merged) {
+          closedPRNumbers.add(prNum);
+        } else if (pr.merged && pr.merge_commit_sha) {
+          // The PR was merged but its commit isn't in gitBase..gitHead.
+          // Use the compare API to determine if it was merged before gitBase
+          // or after gitHead.
+          try {
+            const { data: baseCmp } = await octokit.repos.compareCommits({
+              owner: "concord-consortium",
+              repo: gitRepo,
+              base: pr.merge_commit_sha,
+              head: gitBase
+            });
+            if (baseCmp.status === "ahead" || baseCmp.status === "identical") {
+              mergedBeforeBasePRNumbers.add(prNum);
+              return;
+            }
+          } catch {
+            // Compare failed — try the head check anyway.
+          }
+          try {
+            const { data: headCmp } = await octokit.repos.compareCommits({
+              owner: "concord-consortium",
+              repo: gitRepo,
+              base: gitHead,
+              head: pr.merge_commit_sha
+            });
+            // "ahead": PR was merged after gitHead on the same branch.
+            // "diverged": PR was merged on a different branch (e.g. master)
+            //   that diverged from gitHead (e.g. a release branch). The
+            //   common ancestor is the branch point, and the PR's code
+            //   isn't in gitHead either way.
+            if (headCmp.status === "ahead" || headCmp.status === "identical" || headCmp.status === "diverged") {
+              mergedAfterHeadPRNumbers.add(prNum);
+            }
+          } catch {
+            // If the compare fails (e.g. force-pushed branch), we can't
+            // determine ancestry — leave it as "not merged".
+          }
+        }
+      } catch (error) {
+        console.warn(`⚠️  Could not fetch PR #${prNum}: ${error.message}`);
+      }
+    }));
+  }
+
+  const unmergedJiraIssues = [];
+  const wrongVersionJiraIssues = [];
+  for (const [issueKey, { summary, prNumbers }] of jiraIssuePRs) {
+    if (prNumbers.length === 0) continue;
+    // An issue needs attention if any PR is not in the release range and
+    // wasn't simply closed. "Merged after head" still counts — the code
+    // hasn't landed in the release yet.
+    const hasUnmerged = prNumbers.some(n =>
+      !mergedPRNumbers.has(n) && !closedPRNumbers.has(n) &&
+      !mergedBeforeBasePRNumbers.has(n)
+    );
+    if (hasUnmerged) {
+      unmergedJiraIssues.push({ issueKey, summary, prNumbers });
+    } else if (!prNumbers.some(n => mergedPRNumbers.has(n))) {
+      // No PRs landed in this release — they were all merged before gitBase
+      // or closed. The fixVersion may be wrong.
+      if (prNumbers.some(n => mergedBeforeBasePRNumbers.has(n))) {
+        wrongVersionJiraIssues.push({ issueKey, summary, prNumbers });
+      }
+    }
+  }
 
   console.log(`🔍 Found ${mergedPRs.length} PRs merged between ${gitBase} and ${gitHead}.`);
   mergedPRs.forEach(pr => {
@@ -431,6 +646,46 @@ async function getUnlinkedMergedPRs() {
       .sort((a, b) => a.number - b.number)
       .forEach(pr => {
         console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+      });
+  }
+
+  if (unmergedJiraIssues.length > 0) {
+    console.log(`\n⚠️  Jira issues tagged with fixVersion "${jiraFixVersion}" whose PRs are NOT merged into ${gitHead}:\n`);
+    unmergedJiraIssues
+      .sort((a, b) => a.issueKey.localeCompare(b.issueKey))
+      .forEach(({ issueKey, summary, prNumbers }) => {
+        console.log(`- ${issueKey}: ${summary}`);
+        console.log(`    ${jiraBaseUrl}/browse/${issueKey}`);
+        prNumbers.forEach(prNum => {
+          const status = mergedPRNumbers.has(prNum)
+            ? "merged"
+            : mergedBeforeBasePRNumbers.has(prNum)
+            ? `merged < ${gitBase}`
+            : mergedAfterHeadPRNumbers.has(prNum)
+            ? `merged > ${gitHead}`
+            : closedPRNumbers.has(prNum)
+            ? "closed"
+            : "not merged";
+          console.log(`  ${status}: https://github.com/concord-consortium/${gitRepo}/pull/${prNum}`);
+        });
+      });
+  }
+
+  if (wrongVersionJiraIssues.length > 0) {
+    console.log(`\n📦 Jira issues tagged with fixVersion "${jiraFixVersion}" whose PRs were all merged outside ${gitBase}..${gitHead} (fixVersion may be wrong):\n`);
+    wrongVersionJiraIssues
+      .sort((a, b) => a.issueKey.localeCompare(b.issueKey))
+      .forEach(({ issueKey, summary, prNumbers }) => {
+        console.log(`- ${issueKey}: ${summary}`);
+        console.log(`    ${jiraBaseUrl}/browse/${issueKey}`);
+        prNumbers.forEach(prNum => {
+          const status = mergedBeforeBasePRNumbers.has(prNum)
+            ? `merged < ${gitBase}`
+            : mergedAfterHeadPRNumbers.has(prNum)
+            ? `merged > ${gitHead}`
+            : "closed";
+          console.log(`  ${status}: https://github.com/concord-consortium/${gitRepo}/pull/${prNum}`);
+        });
       });
   }
 
