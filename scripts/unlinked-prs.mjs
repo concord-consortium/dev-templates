@@ -186,12 +186,7 @@ async function getJiraLinkedPRs() {
 }
 
 async function getMergedPRs() {
-  // A single compare response is capped at 250 commits. Without an explicit
-  // per_page, GitHub returns those 250 with NO Link header, so octokit.paginate
-  // makes a single request and silently drops the rest — and it drops the
-  // OLDEST commits, which is exactly where merges of long-lived branches (e.g.
-  // a branch merged in early in the release window) live. Setting per_page makes
-  // the endpoint emit Link headers so octokit.paginate walks every page.
+  // Setting per_page makes the endpoint emit Link headers so octokit.paginate walks every page.
   const commits = await octokit.paginate(
     octokit.repos.compareCommits,
     {
