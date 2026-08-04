@@ -57,6 +57,41 @@ async function verifyJiraAuth() {
   }
 }
 
+/**
+ * Returns the PR ids (e.g. "#2891") Jira's development panel has recorded for an issue.
+ *
+ * The dev-status detail endpoint requires an `applicationType`, and it must be the
+ * *instance type* key Jira uses internally — not the friendly name. For the GitHub
+ * cloud integration that key is "oAuth-com.github.integration.production"; passing
+ * "GitHub" returns `{"detail": []}` with a 200, so linked PRs silently disappear.
+ *
+ * Rather than hard-coding the key, ask the summary endpoint which instance types
+ * this issue actually has PRs in, then fetch detail for each. That keeps working if
+ * the key changes again or a project uses a different provider (Bitbucket, GitLab).
+ */
+async function getIssuePullRequestIds(issueId, requestHeaders) {
+  const summaryUrl = `${jiraDevApiBaseUrl}/issue/summary?issueId=${issueId}`;
+  const summaryResponse = await fetch(summaryUrl, requestHeaders);
+  if (!summaryResponse.ok) return [];
+  const summary = await summaryResponse.json();
+  const instanceTypes = Object.keys(summary.summary?.pullrequest?.byInstanceType ?? {});
+
+  const prIds = [];
+  for (const instanceType of instanceTypes) {
+    const detailUrl = `${jiraDevApiBaseUrl}/issue/detail?issueId=${issueId}` +
+      `&applicationType=${encodeURIComponent(instanceType)}&dataType=pullrequest`;
+    const detailResponse = await fetch(detailUrl, requestHeaders);
+    if (!detailResponse.ok) continue;
+    const detailData = await detailResponse.json();
+    for (const detail of detailData.detail ?? []) {
+      for (const pr of detail.pullRequests ?? []) {
+        prIds.push(pr.id);
+      }
+    }
+  }
+  return prIds;
+}
+
 async function getJiraLinkedPRs() {
   const urlQuery = querystring.stringify({
     jql: `project=${jiraProjectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore, Task)`,
@@ -105,22 +140,17 @@ async function getJiraLinkedPRs() {
   await Promise.all(json.issues.map(async (issue) => {
     const issuePrNumbers = [];
     try {
-      const prUrl = `${jiraDevApiBaseUrl}/issue/detail?issueId=${issue.id}&applicationType=GitHub&dataType=pullrequest`;
-      const prResponse = await fetch(prUrl, requestHeaders);
-      const prData = await prResponse.json();
-
-      if (Array.isArray(prData.detail) && prData.detail.length > 0) {
-        prData.detail[0].pullRequests.forEach(storyPr => {
-          const match = storyPr.id.match(/\d+/);
-          if (match) {
-            const prNumber = parseInt(match[0], 10);
-            jiraPRs.add(prNumber);
-            issuePrNumbers.push(prNumber);
-          } else {
-            console.warn(`Skipping invalid PR ID format (${storyPr.id}) for issue ${issue.key} with title ${issue.fields.summary}`);
-          }
-        });
-      }
+      const prIds = await getIssuePullRequestIds(issue.id, requestHeaders);
+      prIds.forEach(prId => {
+        const match = prId.match(/\d+/);
+        if (match) {
+          const prNumber = parseInt(match[0], 10);
+          jiraPRs.add(prNumber);
+          issuePrNumbers.push(prNumber);
+        } else {
+          console.warn(`Skipping invalid PR ID format (${prId}) for issue ${issue.key} with title ${issue.fields.summary}`);
+        }
+      });
 
       // Also check web links (remote links) for GitHub PR URLs.
       // This catches PRs that were linked manually after the fact.
@@ -156,13 +186,15 @@ async function getJiraLinkedPRs() {
 }
 
 async function getMergedPRs() {
+  // Setting per_page makes the endpoint emit Link headers so octokit.paginate walks every page.
   const commits = await octokit.paginate(
     octokit.repos.compareCommits,
     {
       owner: "concord-consortium",
       repo: gitRepo,
       base: gitBase,
-      head: gitHead
+      head: gitHead,
+      per_page: 100
     },
     response => response.data.commits.map(commit => ({
       sha: commit.sha,
@@ -263,44 +295,57 @@ async function getUnlinkedMergedPRs() {
     labels: (pr.labels ?? []).map(l => l.name)
   });
 
-  // When a PR is squash-merged, GitHub creates a new commit whose message
-  // contains the PR title followed by the PR number, e.g. "Some title (#1234)".
-  // The committer is "web-flow" (GitHub). These commits won't match any
-  // merge_commit_sha from the PR listing, so we detect them from the commit
-  // message and fetch the PR to verify.
+  // The `prs` listing above can miss PRs whose merge commit is actually in the
+  // release range. The usual cause is the updated_at cutoff in getMergedPRs():
+  // a PR merged into a long-lived branch before the release window, and not
+  // touched since, is dropped from the listing even though the long-lived
+  // branch later landed in the range. Squash merges are also missed when their
+  // PR falls outside the listing.
+  //
+  // To recover these, scan the range's commits for the two shapes GitHub uses
+  // to record a merge in the commit message:
+  //   - merge commits:  "Merge pull request #1234 from owner/branch"
+  //   - squash commits: "Some title (#1234)"
+  // For each referenced PR we don't already have, fetch it and confirm its
+  // recorded merge_commit_sha matches the commit we found before counting it as
+  // merged. That check guards against an unrelated "(#1234)" mention.
   const mergedPRNumbers = new Set(mergedPRs.map(pr => pr.number));
+  const mergeCommitPattern = /^Merge pull request #(\d+) /;
   const squashPrPattern = /\(#(\d+)\)\s*$/;
 
-  const squashCandidates = commits
-    .filter(c => c.committer === "web-flow" && squashPrPattern.test(c.message.split("\n")[0]))
-    .map(c => {
-      const match = c.message.split("\n")[0].match(squashPrPattern);
-      return { prNumber: parseInt(match[1], 10), commitSha: c.sha };
-    })
-    .filter(({ prNumber }) => !mergedPRNumbers.has(prNumber));
+  // First commit message occurrence wins; the merge_commit_sha check validates it.
+  const prCommitCandidates = new Map(); // prNumber -> commitSha
+  for (const commit of commits) {
+    const firstLine = commit.message.split("\n")[0];
+    const match = firstLine.match(mergeCommitPattern) ?? firstLine.match(squashPrPattern);
+    if (!match) continue;
+    const prNumber = parseInt(match[1], 10);
+    if (mergedPRNumbers.has(prNumber) || prCommitCandidates.has(prNumber)) continue;
+    prCommitCandidates.set(prNumber, commit.sha);
+  }
 
-  if (squashCandidates.length > 0) {
-    const squashPRs = await Promise.all(
-      squashCandidates.map(async ({ prNumber, commitSha }) => {
+  if (prCommitCandidates.size > 0) {
+    const recoveredPRs = await Promise.all(
+      [...prCommitCandidates].map(async ([prNumber, commitSha]) => {
         try {
           const { data: pr } = await octokit.pulls.get({
             owner: "concord-consortium",
             repo: gitRepo,
             pull_number: prNumber
           });
-          // Verify the PR was actually merged and the squash commit SHA matches
-          // what GitHub recorded as the merge_commit_sha for this PR.
+          // Verify the PR was actually merged and the commit we found is the
+          // merge_commit_sha GitHub recorded for this PR.
           if (pr.merged && pr.merge_commit_sha === commitSha) {
             return prShape(pr);
           }
         } catch (error) {
-          console.warn(`⚠️  Could not fetch PR #${prNumber} referenced in squash commit: ${error.message}`);
+          console.warn(`⚠️  Could not fetch PR #${prNumber} referenced in commit ${commitSha}: ${error.message}`);
         }
         return null;
       })
     );
 
-    for (const pr of squashPRs) {
+    for (const pr of recoveredPRs) {
       if (pr) {
         mergedPRs.push(pr);
         mergedPRNumbers.add(pr.number);
@@ -626,7 +671,7 @@ async function getUnlinkedMergedPRs() {
     console.log(`\n🗒  PRs linked to a Jira issue that has no fixVersion — assign "${jiraFixVersion}" or add the "no-release" label:\n`);
     linkedNeedsAction.forEach(({ pr, issueKey }) => {
       console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
-      console.log(`   └─ ${issueKey}`);
+      console.log(`   └─ ${issueKey}: ${jiraBaseUrl}/browse/${issueKey}`);
     });
   }
 
@@ -636,7 +681,7 @@ async function getUnlinkedMergedPRs() {
       .sort((a, b) => a.pr.number - b.pr.number)
       .forEach(({ pr, issueKey }) => {
         console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
-        console.log(`   └─ ${issueKey}`);
+        console.log(`   └─ ${issueKey}: ${jiraBaseUrl}/browse/${issueKey}`);
       });
   }
 
