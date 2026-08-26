@@ -5,7 +5,9 @@
   - there should be no "warnings" on the right side. I believe that would indicate if an issue has a PR that is not merged.
 - check for PRs that have been merged but are not associated with any Jira issues:
   `npm run unlinked-prs CLUE <new version in jira> collaborative-learning <tag of previous version in GitHub> master`
-- create and checkout a new release branch usually `vA.B.x` where A and B are numbers
+  - `<new version in jira>` will probably be of the form `A.B.C`, where A, B, and C are numbers.
+  - `<tag of previous version in GitHub>` will probably be of the form `vA.B.C`.
+- create and checkout a new release branch usually `vA.B.x`.
 - run `npm version A.B.C` in release branch where C is the patch number. This does 3 things:
   - it updates package.json and package-lock.json with the new version
   - it commits these changes with a message of `A.B.C`
@@ -13,15 +15,32 @@
 - push the `vA.B.x` branch and `vA.B.C` tag
 - generate release notes:
   `npm run release-notes-jira CLUE <new version in jira>`
-- add release notes to GitHub
+- release the tag using the "Create release from tag" button on the tag page
+  - title: `A.B.C`
+  - description: release notes generated above
+  - release label: Latest
 - update learn.portal.staging.concord.org:
   - report: https://learn.portal.staging.concord.org/admin/external_reports/10/edit
   - clients: https://learn.portal.staging.concord.org/admin/clients/6/edit
+- generate release notes for slack:
+  `npm run release-notes-jira CLUE <new version in jira> slack`
 - make announcement on releases channel with slack formatted notes and include link to GitHub release
 - smoke test the released tag
-- release staging and smoke test staging
+- release staging
+  - if necessary, deploy firestore rules for staging
+    1. Follow instructions in `collaborative-learning/README.md`.
+  - if necessary, deploy firebase functions for staging
+    1. cd into `collaborative-learning/functions-v2`.
+    2. Follow instructions in `README.md` there.
+  - release the actual build
+    1. Go to the actions page: https://github.com/concord-consortium/collaborative-learning/actions
+    2. Select Release Staging from the Actions list.
+    3. Click the Run workflow dropdown.
+    4. Enter `vA.B.C` for the tag.
+    5. Click the Run workflow button.
+- smoke test staging
 - wait
-- do the actual release using GitHub script
+- do the actual release, following the steps for staging above but targeting production
 
 
 Streamline Tasks:
