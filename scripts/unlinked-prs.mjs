@@ -140,15 +140,33 @@ async function getIssuePullRequests(issueId, requestHeaders) {
   return prs;
 }
 
+// Custom field ids differ between Jira sites, so look them up by name.
+async function getJiraFieldIds(requestHeaders) {
+  const response = await fetch(`${jiraApiBaseUrl}/field`, requestHeaders);
+  const fields = response.ok ? await response.json() : [];
+  const idOf = name => fields.find(field => field.name === name)?.id;
+  return {
+    projectTeamApprover: idOf("Project Team Approver")
+  };
+}
+
+// A user field may hold one user or a list of users.
+function userNames(value) {
+  if (!value) return [];
+  return (Array.isArray(value) ? value : [value]).map(user => user.displayName).filter(Boolean);
+}
+
 async function getJiraLinkedPRs() {
+  const requestHeaders = jiraRequestHeaders(jiraUser, jiraToken);
+  const fieldIds = await getJiraFieldIds(requestHeaders);
   const urlQuery = querystring.stringify({
     jql: `project=${jiraProjectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore, Task)`,
-    fields: "summary,status,assignee,issuetype",
+    fields: ["summary", "status", "assignee", "issuetype", fieldIds.projectTeamApprover]
+      .filter(Boolean).join(","),
     maxResults: 100
   });
 
   const url = `${jiraApiBaseUrl}/search/jql?${urlQuery}`;
-  const requestHeaders = jiraRequestHeaders(jiraUser, jiraToken);
   const response = await fetch(url, requestHeaders);
 
   if (response.status === 401) {
@@ -164,7 +182,7 @@ async function getJiraLinkedPRs() {
 
   const json = await response.json();
   const jiraPRs = new Set();
-  // Maps each Jira issue key to { summary, prNumbers[] } so callers can
+  // Maps each Jira issue key to its summary, state and linked PRs so callers can
   // check whether an issue's linked PRs actually landed in a given release.
   const jiraIssuePRs = new Map();
 
@@ -224,8 +242,10 @@ async function getJiraLinkedPRs() {
     jiraIssuePRs.set(issueLabel, {
       summary: issue.fields?.summary ?? issueLabel,
       status: issue.fields?.status?.name,
+      isDone: issue.fields?.status?.statusCategory?.key === "done",
       assignee: issue.fields?.assignee?.displayName,
       type: issue.fields?.issuetype?.name,
+      projectTeamApprovers: userNames(issue.fields?.[fieldIds.projectTeamApprover]),
       prNumbers: issuePrNumbers,
       otherRepoPRs
     });
@@ -533,7 +553,8 @@ async function getUnlinkedMergedPRs() {
 
   const unmergedJiraIssues = [];
   const wrongVersionJiraIssues = [];
-  for (const [issueKey, { summary, prNumbers, otherRepoPRs }] of jiraIssuePRs) {
+  for (const [issueKey, issue] of jiraIssuePRs) {
+    const { summary, prNumbers, otherRepoPRs } = issue;
     if (prNumbers.length === 0 && otherRepoPRs.length === 0) continue;
     // An issue needs attention if any PR is not in the release range and
     // wasn't simply closed. "Merged after head" still counts — the code
@@ -544,7 +565,7 @@ async function getUnlinkedMergedPRs() {
       !mergedBeforeBasePRNumbers.has(n)
     ) || otherRepoPRs.some(pr => pr.status === "OPEN" || pr.status === "DRAFT");
     if (hasUnmerged) {
-      unmergedJiraIssues.push({ issueKey, summary, prNumbers, otherRepoPRs });
+      unmergedJiraIssues.push({ issueKey, ...issue });
     } else if (!prNumbers.some(n => mergedPRNumbers.has(n))) {
       // No PRs landed in this release — they were all merged before gitBase
       // or closed. The fixVersion may be wrong.
@@ -791,15 +812,40 @@ async function getUnlinkedMergedPRs() {
     });
   };
 
+  // Lines explaining where an issue that isn't Done stands and who it waits on.
+  const printIssueProgress = (issue) => {
+    if (issue.isDone) return;
+    console.log(`    status: ${issue.status} (${issue.assignee ?? "unassigned"})`);
+    if (/project team review/i.test(issue.status ?? "")) {
+      const approvers = issue.projectTeamApprovers.join(", ") || "no Project Team Approver set";
+      console.log(`    waiting on project team review: ${approvers}`);
+    }
+  };
+
   if (unmergedJiraIssues.length > 0) {
     console.log(`\n⚠️  Jira issues tagged with fixVersion "${jiraFixVersion}" whose PRs are NOT merged into ${gitHead}:\n`);
     unmergedJiraIssues
-      .sort((a, b) => a.issueKey.localeCompare(b.issueKey))
+      .sort((a, b) => a.issueKey.localeCompare(b.issueKey, undefined, { numeric: true }))
       .forEach((issue) => {
         console.log(`- ${issue.issueKey}: ${issue.summary}`);
         console.log(`    ${jiraBaseUrl}/browse/${issue.issueKey}`);
+        printIssueProgress(issue);
         printIssuePRs(issue);
       });
+  }
+
+  const unmergedIssueKeys = new Set(unmergedJiraIssues.map(issue => issue.issueKey));
+  const otherNotDoneIssues = [...jiraIssuePRs]
+    .filter(([issueKey, issue]) => !issue.isDone && !unmergedIssueKeys.has(issueKey))
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }));
+  if (otherNotDoneIssues.length > 0) {
+    console.log(`\n⏳ Other Jira issues tagged with fixVersion "${jiraFixVersion}" that are not Done:\n`);
+    otherNotDoneIssues.forEach(([issueKey, issue]) => {
+      console.log(`- ${issueKey}: ${issue.summary}`);
+      console.log(`    ${jiraBaseUrl}/browse/${issueKey}`);
+      printIssueProgress(issue);
+      printIssuePRs(issue);
+    });
   }
 
   if (wrongVersionJiraIssues.length > 0) {
