@@ -8,11 +8,16 @@
  * - GitHub base ref (e.g., "v4.9.1")
  * - GitHub head ref (e.g., "v5.0.0")
  *
+ * Optional flags (anywhere on the command line):
+ * - --details  also print every issue in the fix version with all of its linked PRs,
+ *              not just the issues that need attention
+ *
  * Example usage:
  * node unlinked-prs.mjs LARA "LARA v5.0.0" lara v4.9.1 v5.0.0
  */
 
 import "dotenv/config";
+import { execFileSync } from "child_process";
 import fetch from "node-fetch";
 import querystring from "querystring";
 import { Octokit } from "@octokit/rest";
@@ -20,25 +25,50 @@ import { jiraBaseUrl, jiraApiBaseUrl, jiraDevApiBaseUrl, jiraRequestHeaders } fr
 
 const jiraUser = process.env.JIRA_USER;
 const jiraToken = process.env.JIRA_TOKEN;
-const ghToken = process.env.GITHUB_TOKEN;
 
 if (!jiraUser || !jiraToken) {
   console.error("Both the JIRA_USER and JIRA_TOKEN environment variables are required.");
   process.exit(1);
 }
 
+// Prefer an explicit GITHUB_TOKEN, otherwise borrow the GitHub CLI's login so most
+// developers don't need to create and maintain a separate token.
+let ghToken = process.env.GITHUB_TOKEN;
+const ghTokenSource = ghToken ? "GITHUB_TOKEN" : "gh auth token";
 if (!ghToken) {
-  console.error("GITHUB_TOKEN environment variable is required");
+  try {
+    ghToken = execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim();
+  } catch {
+    // handled below
+  }
+}
+if (!ghToken) {
+  console.error("❌ No GitHub token: set GITHUB_TOKEN, or log in to the GitHub CLI with `gh auth login`.");
   process.exit(1);
 }
 
-const jiraProjectKey = process.argv[2];
-const jiraFixVersion = process.argv[3];
-const gitRepo = process.argv[4];
-const gitBase = process.argv[5];
-const gitHead = process.argv[6];
+const flags = new Set(process.argv.slice(2).filter(arg => arg.startsWith("--")));
+const [jiraProjectKey, jiraFixVersion, gitRepo, gitBase, gitHead] =
+  process.argv.slice(2).filter(arg => !arg.startsWith("--"));
+const showDetails = flags.has("--details");
+const thisRepo = `concord-consortium/${gitRepo}`;
 
 const octokit = new Octokit({ auth: ghToken });
+
+async function verifyGitHubAuth() {
+  try {
+    await octokit.repos.get({ owner: "concord-consortium", repo: gitRepo });
+  } catch (error) {
+    if (error.status === 401) {
+      console.error(`❌ GitHub authentication failed using ${ghTokenSource}.`);
+      if (ghTokenSource === "GITHUB_TOKEN") {
+        console.error("   Renew the token, or remove GITHUB_TOKEN to fall back to the GitHub CLI login.");
+      }
+      process.exit(1);
+    }
+    throw error;
+  }
+}
 
 async function verifyJiraAuth() {
   // /myself returns 401 cleanly when a token is expired or invalid,
@@ -57,8 +87,20 @@ async function verifyJiraAuth() {
   }
 }
 
+// "https://github.com/owner/repo/pull/123" -> { repo: "owner/repo", number: 123 }
+function parsePullUrl(url) {
+  const match = url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+  return match ? { repo: match[1], number: parseInt(match[2], 10) } : null;
+}
+
 /**
- * Returns the PR ids (e.g. "#2891") Jira's development panel has recorded for an issue.
+ * Returns the PRs Jira's development panel has recorded for an issue, as
+ * { number, repo, status } where status is Jira's (MERGED, OPEN, DECLINED, ...).
+ *
+ * The PR `id` Jira reports is just "#398" with no repository, so the repo comes
+ * from the PR url. Issues can link PRs from other repositories (e.g. a
+ * report-service change for a CLUE story), and those must not be mistaken for a
+ * PR with the same number in this repo.
  *
  * The dev-status detail endpoint requires an `applicationType`, and it must be the
  * *instance type* key Jira uses internally — not the friendly name. For the GitHub
@@ -69,14 +111,14 @@ async function verifyJiraAuth() {
  * this issue actually has PRs in, then fetch detail for each. That keeps working if
  * the key changes again or a project uses a different provider (Bitbucket, GitLab).
  */
-async function getIssuePullRequestIds(issueId, requestHeaders) {
+async function getIssuePullRequests(issueId, requestHeaders) {
   const summaryUrl = `${jiraDevApiBaseUrl}/issue/summary?issueId=${issueId}`;
   const summaryResponse = await fetch(summaryUrl, requestHeaders);
   if (!summaryResponse.ok) return [];
   const summary = await summaryResponse.json();
   const instanceTypes = Object.keys(summary.summary?.pullrequest?.byInstanceType ?? {});
 
-  const prIds = [];
+  const prs = [];
   for (const instanceType of instanceTypes) {
     const detailUrl = `${jiraDevApiBaseUrl}/issue/detail?issueId=${issueId}` +
       `&applicationType=${encodeURIComponent(instanceType)}&dataType=pullrequest`;
@@ -85,17 +127,23 @@ async function getIssuePullRequestIds(issueId, requestHeaders) {
     const detailData = await detailResponse.json();
     for (const detail of detailData.detail ?? []) {
       for (const pr of detail.pullRequests ?? []) {
-        prIds.push(pr.id);
+        const parsed = parsePullUrl(pr.url);
+        const number = parsed?.number ?? parseInt(pr.id?.match(/\d+/)?.[0], 10);
+        if (!number) {
+          console.warn(`Skipping PR with unrecognized id/url (${pr.id} ${pr.url}) for issue id ${issueId}`);
+          continue;
+        }
+        prs.push({ number, repo: parsed?.repo ?? pr.repositoryName ?? thisRepo, status: pr.status });
       }
     }
   }
-  return prIds;
+  return prs;
 }
 
 async function getJiraLinkedPRs() {
   const urlQuery = querystring.stringify({
     jql: `project=${jiraProjectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore, Task)`,
-    fields: "summary",
+    fields: "summary,status,assignee,issuetype",
     maxResults: 100
   });
 
@@ -139,18 +187,21 @@ async function getJiraLinkedPRs() {
 
   await Promise.all(json.issues.map(async (issue) => {
     const issuePrNumbers = [];
+    // PRs in other repositories, as { repo, number, status }. They are reported
+    // but never matched against this repo's merge history.
+    const otherRepoPRs = [];
+    const addPR = ({ repo, number, status }) => {
+      if (repo === thisRepo) {
+        if (issuePrNumbers.includes(number)) return;
+        jiraPRs.add(number);
+        issuePrNumbers.push(number);
+      } else if (!otherRepoPRs.some(pr => pr.repo === repo && pr.number === number)) {
+        otherRepoPRs.push({ repo, number, status });
+      }
+    };
     try {
-      const prIds = await getIssuePullRequestIds(issue.id, requestHeaders);
-      prIds.forEach(prId => {
-        const match = prId.match(/\d+/);
-        if (match) {
-          const prNumber = parseInt(match[0], 10);
-          jiraPRs.add(prNumber);
-          issuePrNumbers.push(prNumber);
-        } else {
-          console.warn(`Skipping invalid PR ID format (${prId}) for issue ${issue.key} with title ${issue.fields.summary}`);
-        }
-      });
+      const prs = await getIssuePullRequests(issue.id, requestHeaders);
+      prs.forEach(addPR);
 
       // Also check web links (remote links) for GitHub PR URLs.
       // This catches PRs that were linked manually after the fact.
@@ -159,14 +210,8 @@ async function getJiraLinkedPRs() {
       if (remoteLinksResponse.ok) {
         const remoteLinks = await remoteLinksResponse.json();
         for (const link of remoteLinks) {
-          const linkUrl = link.object?.url;
-          if (!linkUrl) continue;
-          const prMatch = linkUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
-          if (prMatch && prMatch[1] === `concord-consortium/${gitRepo}`) {
-            const prNumber = parseInt(prMatch[2], 10);
-            jiraPRs.add(prNumber);
-            issuePrNumbers.push(prNumber);
-          }
+          const parsed = parsePullUrl(link.object?.url);
+          if (parsed) addPR({ ...parsed, status: null });
         }
       }
     } catch (error) {
@@ -178,8 +223,27 @@ async function getJiraLinkedPRs() {
     const issueLabel = issue.key ?? `id:${issue.id}`;
     jiraIssuePRs.set(issueLabel, {
       summary: issue.fields?.summary ?? issueLabel,
-      prNumbers: issuePrNumbers
+      status: issue.fields?.status?.name,
+      assignee: issue.fields?.assignee?.displayName,
+      type: issue.fields?.issuetype?.name,
+      prNumbers: issuePrNumbers,
+      otherRepoPRs
     });
+  }));
+
+  // Remote links carry no PR state, so look up any other-repo PRs that only
+  // came from a remote link.
+  const unknownOtherRepoPRs = [...jiraIssuePRs.values()]
+    .flatMap(({ otherRepoPRs }) => otherRepoPRs)
+    .filter(pr => !pr.status);
+  await Promise.all(unknownOtherRepoPRs.map(async (pr) => {
+    try {
+      const [owner, repo] = pr.repo.split("/");
+      const { data } = await octokit.pulls.get({ owner, repo, pull_number: pr.number });
+      pr.status = data.merged ? "MERGED" : data.state === "closed" ? "DECLINED" : data.draft ? "DRAFT" : "OPEN";
+    } catch {
+      pr.status = "UNKNOWN";
+    }
   }));
 
   return { jiraPRs, jiraIssuePRs };
@@ -264,6 +328,7 @@ async function getMergedPRs() {
 
 async function getUnlinkedMergedPRs() {
   await verifyJiraAuth();
+  await verifyGitHubAuth();
 
   const [{ jiraPRs, jiraIssuePRs }, {commits, prs}] = await Promise.all([
     getJiraLinkedPRs(),
@@ -468,17 +533,18 @@ async function getUnlinkedMergedPRs() {
 
   const unmergedJiraIssues = [];
   const wrongVersionJiraIssues = [];
-  for (const [issueKey, { summary, prNumbers }] of jiraIssuePRs) {
-    if (prNumbers.length === 0) continue;
+  for (const [issueKey, { summary, prNumbers, otherRepoPRs }] of jiraIssuePRs) {
+    if (prNumbers.length === 0 && otherRepoPRs.length === 0) continue;
     // An issue needs attention if any PR is not in the release range and
     // wasn't simply closed. "Merged after head" still counts — the code
-    // hasn't landed in the release yet.
+    // hasn't landed in the release yet. For PRs in other repos there's no
+    // release range to check, so only an open PR counts.
     const hasUnmerged = prNumbers.some(n =>
       !mergedPRNumbers.has(n) && !closedPRNumbers.has(n) &&
       !mergedBeforeBasePRNumbers.has(n)
-    );
+    ) || otherRepoPRs.some(pr => pr.status === "OPEN" || pr.status === "DRAFT");
     if (hasUnmerged) {
-      unmergedJiraIssues.push({ issueKey, summary, prNumbers });
+      unmergedJiraIssues.push({ issueKey, summary, prNumbers, otherRepoPRs });
     } else if (!prNumbers.some(n => mergedPRNumbers.has(n))) {
       // No PRs landed in this release — they were all merged before gitBase
       // or closed. The fixVersion may be wrong.
@@ -512,8 +578,16 @@ async function getUnlinkedMergedPRs() {
   // For unlinked PRs, check if they reference a Jira issue that was already
   // released in a previous version (e.g. hotfixes merged into both a release
   // branch and master).
-  const issueKeyPattern = new RegExp(`${jiraProjectKey}-(\\d+)`, "g");
+  //
+  // Keys from other Jira projects (e.g. a DEV ticket) are collected too. They
+  // don't make a PR linked — the work still needs an issue in this project —
+  // but they help explain what the PR is. Only prefixes that are real project
+  // keys count, so text like "UTF-8" is not taken for an issue key.
   const requestHeaders = jiraRequestHeaders(jiraUser, jiraToken);
+  const projectKeys = await getJiraProjectKeys(requestHeaders);
+  projectKeys.add(jiraProjectKey);
+  const issueKeyPattern = /\b([A-Z][A-Z0-9]+)-\d+\b/g;
+  const isThisProjectKey = key => key.startsWith(`${jiraProjectKey}-`);
 
   // Collect every referenced issue key across all unlinked PRs so we can
   // fetch their fixVersions in a single JQL search. The direct /issue/{key}
@@ -521,7 +595,11 @@ async function getUnlinkedMergedPRs() {
   // so batching through /search/jql is both more robust and faster.
   const prReferencedKeys = unlinkedPRs.map(pr => {
     const searchText = `${pr.title} ${pr.body} ${pr.branch}`;
-    return [...new Set([...searchText.matchAll(issueKeyPattern)].map(m => m[0]))];
+    return [...new Set(
+      [...searchText.matchAll(issueKeyPattern)]
+        .filter(m => projectKeys.has(m[1]))
+        .map(m => m[0])
+    )];
   });
   const allReferencedKeys = [...new Set(prReferencedKeys.flat())];
 
@@ -533,7 +611,7 @@ async function getUnlinkedMergedPRs() {
     const jql = `key in (${chunk.join(",")})`;
     const jqlQuery = querystring.stringify({
       jql,
-      fields: "fixVersions,summary,labels",
+      fields: "fixVersions,summary,labels,status",
       maxResults: chunkSize
     });
     const jqlUrl = `${jiraApiBaseUrl}/search/jql?${jqlQuery}`;
@@ -543,6 +621,7 @@ async function getUnlinkedMergedPRs() {
       for (const issue of jqlJson.issues ?? []) {
         issueInfo.set(issue.key, {
           summary: issue.fields?.summary,
+          status: issue.fields?.status?.name,
           versionNames: (issue.fields?.fixVersions ?? []).map(v => v.name),
           labels: issue.fields?.labels ?? []
         });
@@ -559,7 +638,7 @@ async function getUnlinkedMergedPRs() {
   }
 
   const classificationResults = unlinkedPRs.map((pr, i) => {
-    const issueKeys = prReferencedKeys[i];
+    const issueKeys = prReferencedKeys[i].filter(isThisProjectKey);
     if (issueKeys.length === 0) {
       return { type: "trulyUnlinked", pr };
     }
@@ -694,25 +773,32 @@ async function getUnlinkedMergedPRs() {
       });
   }
 
+  const prStatusLabel = prNum => mergedPRNumbers.has(prNum)
+    ? "merged"
+    : mergedBeforeBasePRNumbers.has(prNum)
+    ? `merged < ${gitBase}`
+    : mergedAfterHeadPRNumbers.has(prNum)
+    ? `merged > ${gitHead}`
+    : closedPRNumbers.has(prNum)
+    ? "closed"
+    : "not merged";
+  const printIssuePRs = ({ prNumbers, otherRepoPRs }) => {
+    prNumbers.forEach(prNum => {
+      console.log(`  ${prStatusLabel(prNum)}: https://github.com/${thisRepo}/pull/${prNum}`);
+    });
+    otherRepoPRs.forEach(({ repo, number, status }) => {
+      console.log(`  ${status?.toLowerCase() ?? "unknown"} (other repo): https://github.com/${repo}/pull/${number}`);
+    });
+  };
+
   if (unmergedJiraIssues.length > 0) {
     console.log(`\n⚠️  Jira issues tagged with fixVersion "${jiraFixVersion}" whose PRs are NOT merged into ${gitHead}:\n`);
     unmergedJiraIssues
       .sort((a, b) => a.issueKey.localeCompare(b.issueKey))
-      .forEach(({ issueKey, summary, prNumbers }) => {
-        console.log(`- ${issueKey}: ${summary}`);
-        console.log(`    ${jiraBaseUrl}/browse/${issueKey}`);
-        prNumbers.forEach(prNum => {
-          const status = mergedPRNumbers.has(prNum)
-            ? "merged"
-            : mergedBeforeBasePRNumbers.has(prNum)
-            ? `merged < ${gitBase}`
-            : mergedAfterHeadPRNumbers.has(prNum)
-            ? `merged > ${gitHead}`
-            : closedPRNumbers.has(prNum)
-            ? "closed"
-            : "not merged";
-          console.log(`  ${status}: https://github.com/concord-consortium/${gitRepo}/pull/${prNum}`);
-        });
+      .forEach((issue) => {
+        console.log(`- ${issue.issueKey}: ${issue.summary}`);
+        console.log(`    ${jiraBaseUrl}/browse/${issue.issueKey}`);
+        printIssuePRs(issue);
       });
   }
 
@@ -740,8 +826,46 @@ async function getUnlinkedMergedPRs() {
   } else {
     trulyUnlinked.forEach(pr => {
       console.log(`❌ ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+      const otherProjectKeys = prReferencedKeys[unlinkedPRs.indexOf(pr)].filter(key => !isThisProjectKey(key));
+      otherProjectKeys.forEach(key => {
+        const info = issueInfo.get(key);
+        const detail = info ? `${info.summary} [${info.status}]` : "(not found)";
+        console.log(`   └─ references ${key}: ${detail} ${jiraBaseUrl}/browse/${key}`);
+      });
     });
   }
+
+  if (showDetails) {
+    console.log(`\n📋 All issues with fixVersion "${jiraFixVersion}" and their PRs:\n`);
+    [...jiraIssuePRs]
+      .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+      .forEach(([issueKey, issue]) => {
+        console.log(`- ${issueKey} [${issue.type}] ${issue.status} (${issue.assignee ?? "unassigned"}): ${issue.summary}`);
+        if (issue.prNumbers.length === 0 && issue.otherRepoPRs.length === 0) {
+          console.log("  (no PRs)");
+        }
+        printIssuePRs(issue);
+      });
+  }
+}
+
+// Returns the keys of every Jira project the token can see, e.g. {"CLUE", "DEV"}.
+async function getJiraProjectKeys(requestHeaders) {
+  const keys = new Set();
+  let startAt = 0;
+  for (;;) {
+    const url = `${jiraApiBaseUrl}/project/search?startAt=${startAt}&maxResults=100`;
+    const response = await fetch(url, requestHeaders);
+    if (!response.ok) {
+      console.warn(`⚠️  Could not list Jira projects (${response.status}); only ${jiraProjectKey} keys will be recognized.`);
+      break;
+    }
+    const json = await response.json();
+    (json.values ?? []).forEach(project => keys.add(project.key));
+    if (json.isLast || !json.values?.length) break;
+    startAt += json.values.length;
+  }
+  return keys;
 }
 
 getUnlinkedMergedPRs();
