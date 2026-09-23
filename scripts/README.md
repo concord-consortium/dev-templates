@@ -100,6 +100,7 @@ Notes on what the script reports:
 - PRs Jira links from other repositories (e.g. a `report-service` PR on a CLUE story) are shown as "(other repo)". They count as unmerged only while they are open.
 - Issues in the fix version that are not Done are listed with their status and assignee. Issues in project team review also show the "Project Team Approver" they are waiting on.
 - Issues that are not Done but whose PRs have all landed (and that are not in project team review) are flagged with "should this issue be Done?".
+- Not-Done issues also show when they have no PRs, which sprints they are in (a future sprint may mean the issue won't make this release), and any "is blocked by" issues that are not Done. These are for a person to judge; the script doesn't change anything.
 - Open PRs show who they are waiting on: author, draft, approvals, changes requested and requested reviewers. Comment-only reviews such as Copilot's are ignored.
 - For PRs with no linked issue, keys from other Jira projects mentioned in the PR (e.g. `DEV-185`) are shown under the PR. The PR is still reported as unlinked, since the work still needs an issue in this project.
 

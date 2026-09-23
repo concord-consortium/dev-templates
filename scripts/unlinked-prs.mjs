@@ -146,8 +146,24 @@ async function getJiraFieldIds(requestHeaders) {
   const fields = response.ok ? await response.json() : [];
   const idOf = name => fields.find(field => field.name === name)?.id;
   return {
-    projectTeamApprover: idOf("Project Team Approver")
+    projectTeamApprover: idOf("Project Team Approver"),
+    sprint: idOf("Sprint")
   };
+}
+
+// The sprints an issue is in that haven't closed, e.g. ["FY26 Sprint 27 (future)"].
+function openSprintNames(sprints) {
+  return (sprints ?? [])
+    .filter(sprint => sprint.state !== "closed")
+    .map(sprint => `${sprint.name} (${sprint.state})`);
+}
+
+// "is blocked by" links to issues that are not Done, e.g. ["CLUE-659 [To Do]"].
+function unresolvedBlockers(issueLinks) {
+  return (issueLinks ?? [])
+    .filter(link => link.type?.name === "Blocks" && link.inwardIssue)
+    .filter(link => link.inwardIssue.fields?.status?.statusCategory?.key !== "done")
+    .map(link => `${link.inwardIssue.key} [${link.inwardIssue.fields?.status?.name}]`);
 }
 
 // A user field may hold one user or a list of users.
@@ -161,7 +177,7 @@ async function getJiraLinkedPRs() {
   const fieldIds = await getJiraFieldIds(requestHeaders);
   const urlQuery = querystring.stringify({
     jql: `project=${jiraProjectKey} AND fixVersion in ("${jiraFixVersion}") AND issuetype in (Story, Bug, Chore, Task)`,
-    fields: ["summary", "status", "assignee", "issuetype", fieldIds.projectTeamApprover]
+    fields: ["summary", "status", "assignee", "issuetype", "issuelinks", fieldIds.projectTeamApprover, fieldIds.sprint]
       .filter(Boolean).join(","),
     maxResults: 100
   });
@@ -246,6 +262,8 @@ async function getJiraLinkedPRs() {
       assignee: issue.fields?.assignee?.displayName,
       type: issue.fields?.issuetype?.name,
       projectTeamApprovers: userNames(issue.fields?.[fieldIds.projectTeamApprover]),
+      sprints: openSprintNames(issue.fields?.[fieldIds.sprint]),
+      blockers: unresolvedBlockers(issue.fields?.issuelinks),
       prNumbers: issuePrNumbers,
       otherRepoPRs
     });
@@ -847,6 +865,15 @@ async function getUnlinkedMergedPRs() {
       console.log(`    waiting on project team review: ${approvers}`);
     } else if (allCodeLanded(issue)) {
       console.log(`    all PRs are merged — should this issue be Done?`);
+    }
+    if (issue.prNumbers.length === 0 && issue.otherRepoPRs.length === 0) {
+      console.log(`    no PRs linked`);
+    }
+    if (issue.sprints.length > 0) {
+      console.log(`    sprint: ${issue.sprints.join(", ")}`);
+    }
+    if (issue.blockers.length > 0) {
+      console.log(`    blocked by: ${issue.blockers.join(", ")}`);
     }
   };
 
