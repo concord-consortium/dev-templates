@@ -570,6 +570,9 @@ async function getUnlinkedMergedPRs() {
   }
 
   const unmergedJiraIssues = [];
+  // Done issues with an open PR linked. Usually a later PR mentions the issue
+  // (e.g. follow-up work built on it), so this is informational.
+  const doneWithOpenPRIssues = [];
   const wrongVersionJiraIssues = [];
   for (const [issueKey, issue] of jiraIssuePRs) {
     const { summary, prNumbers, otherRepoPRs } = issue;
@@ -582,7 +585,9 @@ async function getUnlinkedMergedPRs() {
       !mergedPRNumbers.has(n) && !closedPRNumbers.has(n) &&
       !mergedBeforeBasePRNumbers.has(n)
     ) || otherRepoPRs.some(pr => pr.status === "OPEN" || pr.status === "DRAFT");
-    if (hasUnmerged) {
+    if (hasUnmerged && issue.isDone) {
+      doneWithOpenPRIssues.push({ issueKey, ...issue });
+    } else if (hasUnmerged) {
       unmergedJiraIssues.push({ issueKey, ...issue });
     } else if (!prNumbers.some(n => mergedPRNumbers.has(n))) {
       // No PRs landed in this release — they were all merged before gitBase
@@ -885,6 +890,17 @@ async function getUnlinkedMergedPRs() {
         console.log(`- ${issue.issueKey}: ${issue.summary}`);
         console.log(`    ${jiraBaseUrl}/browse/${issue.issueKey}`);
         printIssueProgress(issue);
+        printIssuePRs(issue);
+      });
+  }
+
+  if (doneWithOpenPRIssues.length > 0) {
+    console.log(`\nℹ️  Done Jira issues that still have open PRs linked (often a later PR that mentions the issue):\n`);
+    doneWithOpenPRIssues
+      .sort((a, b) => a.issueKey.localeCompare(b.issueKey, undefined, { numeric: true }))
+      .forEach((issue) => {
+        console.log(`- ${issue.issueKey}: ${issue.summary}`);
+        console.log(`    ${jiraBaseUrl}/browse/${issue.issueKey}`);
         printIssuePRs(issue);
       });
   }
