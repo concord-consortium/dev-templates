@@ -803,12 +803,29 @@ async function getUnlinkedMergedPRs() {
     : closedPRNumbers.has(prNum)
     ? "closed"
     : "not merged";
+  // For each open PR linked to an issue, who it is waiting on.
+  const openPRs = [...jiraIssuePRs.values()].flatMap(({ prNumbers, otherRepoPRs }) => [
+    ...prNumbers
+      .filter(n => prStatusLabel(n) === "not merged")
+      .map(number => ({ repo: thisRepo, number })),
+    ...otherRepoPRs.filter(pr => pr.status === "OPEN" || pr.status === "DRAFT")
+  ]);
+  const prReviewStates = new Map(); // "owner/repo#123" -> description
+  const uniqueOpenPRs = new Map(openPRs.map(pr => [`${pr.repo}#${pr.number}`, pr]));
+  await Promise.all([...uniqueOpenPRs].map(async ([id, { repo, number }]) => {
+    prReviewStates.set(id, await getPRReviewState(repo, number));
+  }));
+
   const printIssuePRs = ({ prNumbers, otherRepoPRs }) => {
+    const reviewState = (repo, number) => {
+      const state = prReviewStates.get(`${repo}#${number}`);
+      return state ? ` — ${state}` : "";
+    };
     prNumbers.forEach(prNum => {
-      console.log(`  ${prStatusLabel(prNum)}: https://github.com/${thisRepo}/pull/${prNum}`);
+      console.log(`  ${prStatusLabel(prNum)}: https://github.com/${thisRepo}/pull/${prNum}${reviewState(thisRepo, prNum)}`);
     });
     otherRepoPRs.forEach(({ repo, number, status }) => {
-      console.log(`  ${status?.toLowerCase() ?? "unknown"} (other repo): https://github.com/${repo}/pull/${number}`);
+      console.log(`  ${status?.toLowerCase() ?? "unknown"} (other repo): https://github.com/${repo}/pull/${number}${reviewState(repo, number)}`);
     });
   };
 
@@ -892,6 +909,46 @@ async function getUnlinkedMergedPRs() {
         }
         printIssuePRs(issue);
       });
+  }
+}
+
+// Describes who an open PR is waiting on, e.g.
+// "by kswenson; approved by emcelroy; review requested from lbondaryk".
+// Comment-only reviews (including bots like Copilot) don't count as a decision.
+async function getPRReviewState(repoFullName, number) {
+  const [owner, repo] = repoFullName.split("/");
+  try {
+    const [{ data: pr }, reviews] = await Promise.all([
+      octokit.pulls.get({ owner, repo, pull_number: number }),
+      octokit.paginate(octokit.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 })
+    ]);
+    // Reviews come oldest first, so the last decision per reviewer wins.
+    const decisions = new Map();
+    for (const review of reviews) {
+      if (review.user?.type === "Bot") continue;
+      if (["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review.state)) {
+        decisions.set(review.user.login, review.state);
+      }
+    }
+    const reviewersWith = state => [...decisions].filter(([, s]) => s === state).map(([login]) => login);
+    const requested = [
+      ...(pr.requested_reviewers ?? []).map(user => user.login),
+      ...(pr.requested_teams ?? []).map(team => `team ${team.name}`)
+    ];
+
+    const parts = [`by ${pr.user?.login ?? "unknown"}`];
+    if (pr.draft) parts.push("draft");
+    const changesRequested = reviewersWith("CHANGES_REQUESTED");
+    const approved = reviewersWith("APPROVED");
+    if (changesRequested.length) parts.push(`changes requested by ${changesRequested.join(", ")}`);
+    if (approved.length) parts.push(`approved by ${approved.join(", ")}`);
+    if (requested.length) parts.push(`review requested from ${requested.join(", ")}`);
+    if (!pr.draft && !changesRequested.length && !approved.length && !requested.length) {
+      parts.push("no reviewer requested");
+    }
+    return parts.join("; ");
+  } catch (error) {
+    return `could not read review state: ${error.message}`;
   }
 }
 
