@@ -11,6 +11,8 @@
  * Optional flags (anywhere on the command line):
  * - --details  also print every issue in the fix version with all of its linked PRs,
  *              not just the issues that need attention
+ * - --json     print a single JSON report (every issue, its PRs and flags, and the
+ *              classified merged PRs) instead of the text report
  *
  * Example usage:
  * node unlinked-prs.mjs LARA "LARA v5.0.0" lara v4.9.1 v5.0.0
@@ -51,6 +53,10 @@ const flags = new Set(process.argv.slice(2).filter(arg => arg.startsWith("--")))
 const [jiraProjectKey, jiraFixVersion, gitRepo, gitBase, gitHead] =
   process.argv.slice(2).filter(arg => !arg.startsWith("--"));
 const showDetails = flags.has("--details");
+// --json prints one machine-readable report instead of the text report. The text
+// report goes through log() so it can be silenced; warnings still go to stderr.
+const showJson = flags.has("--json");
+const log = showJson ? () => {} : console.log;
 const thisRepo = `concord-consortium/${gitRepo}`;
 
 const octokit = new Octokit({ auth: ghToken });
@@ -598,14 +604,14 @@ async function getUnlinkedMergedPRs() {
     }
   }
 
-  console.log(`🔍 Found ${mergedPRs.length} PRs merged between ${gitBase} and ${gitHead}.`);
+  log(`🔍 Found ${mergedPRs.length} PRs merged between ${gitBase} and ${gitHead}.`);
   mergedPRs.forEach(pr => {
-    console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+    log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
   });
 
-  console.log(`\n🔍 Found ${jiraPRs.size} PRs linked to Jira issues in project ${jiraProjectKey} with fix version "${jiraFixVersion}".`);
+  log(`\n🔍 Found ${jiraPRs.size} PRs linked to Jira issues in project ${jiraProjectKey} with fix version "${jiraFixVersion}".`);
   jiraPRs.forEach(prNumber => {
-    console.log(`- jiraPR #${prNumber}`);
+    log(`- jiraPR #${prNumber}`);
   });
 
   // PRs carrying the "long lived branch" label are umbrella merges of a
@@ -775,45 +781,45 @@ async function getUnlinkedMergedPRs() {
   trulyUnlinked.sort((a, b) => a.number - b.number);
 
   if (previouslyReleased.length > 0) {
-    console.log(`\n📦 PRs Merged but have different fix versions:\n`);
+    log(`\n📦 PRs Merged but have different fix versions:\n`);
     previouslyReleased.forEach(({ pr, issueKey, summary, versions }) => {
-      console.log(`-  ${pr.html_url} - ${pr.title} (by ${pr.user})`);
-      console.log(`   └─ ${issueKey}: ${summary} (fixVersion ${versions.join(", ")})`);
+      log(`-  ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+      log(`   └─ ${issueKey}: ${summary} (fixVersion ${versions.join(", ")})`);
     });
   }
 
   if (referencedCurrentVersion.length > 0) {
-    console.log(`\n🔗 PRs referencing a Jira issue with fixVersion "${jiraFixVersion}" (not auto-linked by Jira):\n`);
+    log(`\n🔗 PRs referencing a Jira issue with fixVersion "${jiraFixVersion}" (not auto-linked by Jira):\n`);
     referencedCurrentVersion.forEach(({ pr, issueKey, noReleaseConflict }) => {
       const conflict = noReleaseConflict ? ` ⚠️ (${issueKey} also labeled "no-release" — conflict)` : "";
-      console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})${conflict}`);
+      log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})${conflict}`);
     });
   }
 
   if (linkedNeedsAction.length > 0) {
-    console.log(`\n🗒  PRs linked to a Jira issue that has no fixVersion — assign "${jiraFixVersion}" or add the "no-release" label:\n`);
+    log(`\n🗒  PRs linked to a Jira issue that has no fixVersion — assign "${jiraFixVersion}" or add the "no-release" label:\n`);
     linkedNeedsAction.forEach(({ pr, issueKey }) => {
-      console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
-      console.log(`   └─ ${issueKey}: ${jiraBaseUrl}/browse/${issueKey}`);
+      log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+      log(`   └─ ${issueKey}: ${jiraBaseUrl}/browse/${issueKey}`);
     });
   }
 
   if (noReleaseLabeled.length > 0) {
-    console.log(`\n🚫 PRs whose Jira issue is labeled "no-release" (skipped):\n`);
+    log(`\n🚫 PRs whose Jira issue is labeled "no-release" (skipped):\n`);
     noReleaseLabeled
       .sort((a, b) => a.pr.number - b.pr.number)
       .forEach(({ pr, issueKey }) => {
-        console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
-        console.log(`   └─ ${issueKey}: ${jiraBaseUrl}/browse/${issueKey}`);
+        log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+        log(`   └─ ${issueKey}: ${jiraBaseUrl}/browse/${issueKey}`);
       });
   }
 
   if (longLivedBranchPRs.length > 0) {
-    console.log(`\n🌿 Long-lived branch merges (skipped — individual work tracked elsewhere):\n`);
+    log(`\n🌿 Long-lived branch merges (skipped — individual work tracked elsewhere):\n`);
     longLivedBranchPRs
       .sort((a, b) => a.number - b.number)
       .forEach(pr => {
-        console.log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+        log(`- ${pr.html_url} - ${pr.title} (by ${pr.user})`);
       });
   }
 
@@ -845,10 +851,10 @@ async function getUnlinkedMergedPRs() {
       return state ? ` — ${state}` : "";
     };
     prNumbers.forEach(prNum => {
-      console.log(`  ${prStatusLabel(prNum)}: https://github.com/${thisRepo}/pull/${prNum}${reviewState(thisRepo, prNum)}`);
+      log(`  ${prStatusLabel(prNum)}: https://github.com/${thisRepo}/pull/${prNum}${reviewState(thisRepo, prNum)}`);
     });
     otherRepoPRs.forEach(({ repo, number, status }) => {
-      console.log(`  ${status?.toLowerCase() ?? "unknown"} (other repo): https://github.com/${repo}/pull/${number}${reviewState(repo, number)}`);
+      log(`  ${status?.toLowerCase() ?? "unknown"} (other repo): https://github.com/${repo}/pull/${number}${reviewState(repo, number)}`);
     });
   };
 
@@ -864,43 +870,43 @@ async function getUnlinkedMergedPRs() {
   // Lines explaining where an issue that isn't Done stands and who it waits on.
   const printIssueProgress = (issue) => {
     if (issue.isDone) return;
-    console.log(`    status: ${issue.status} (${issue.assignee ?? "unassigned"})`);
+    log(`    status: ${issue.status} (${issue.assignee ?? "unassigned"})`);
     if (/project team review/i.test(issue.status ?? "")) {
       const approvers = issue.projectTeamApprovers.join(", ") || "no Project Team Approver set";
-      console.log(`    waiting on project team review: ${approvers}`);
+      log(`    waiting on project team review: ${approvers}`);
     } else if (allCodeLanded(issue)) {
-      console.log(`    all PRs are merged — should this issue be Done?`);
+      log(`    all PRs are merged — should this issue be Done?`);
     }
     if (issue.prNumbers.length === 0 && issue.otherRepoPRs.length === 0) {
-      console.log(`    no PRs linked`);
+      log(`    no PRs linked`);
     }
     if (issue.sprints.length > 0) {
-      console.log(`    sprint: ${issue.sprints.join(", ")}`);
+      log(`    sprint: ${issue.sprints.join(", ")}`);
     }
     if (issue.blockers.length > 0) {
-      console.log(`    blocked by: ${issue.blockers.join(", ")}`);
+      log(`    blocked by: ${issue.blockers.join(", ")}`);
     }
   };
 
   if (unmergedJiraIssues.length > 0) {
-    console.log(`\n⚠️  Jira issues tagged with fixVersion "${jiraFixVersion}" whose PRs are NOT merged into ${gitHead}:\n`);
+    log(`\n⚠️  Jira issues tagged with fixVersion "${jiraFixVersion}" whose PRs are NOT merged into ${gitHead}:\n`);
     unmergedJiraIssues
       .sort((a, b) => a.issueKey.localeCompare(b.issueKey, undefined, { numeric: true }))
       .forEach((issue) => {
-        console.log(`- ${issue.issueKey}: ${issue.summary}`);
-        console.log(`    ${jiraBaseUrl}/browse/${issue.issueKey}`);
+        log(`- ${issue.issueKey}: ${issue.summary}`);
+        log(`    ${jiraBaseUrl}/browse/${issue.issueKey}`);
         printIssueProgress(issue);
         printIssuePRs(issue);
       });
   }
 
   if (doneWithOpenPRIssues.length > 0) {
-    console.log(`\nℹ️  Done Jira issues that still have open PRs linked (often a later PR that mentions the issue):\n`);
+    log(`\nℹ️  Done Jira issues that still have open PRs linked (often a later PR that mentions the issue):\n`);
     doneWithOpenPRIssues
       .sort((a, b) => a.issueKey.localeCompare(b.issueKey, undefined, { numeric: true }))
       .forEach((issue) => {
-        console.log(`- ${issue.issueKey}: ${issue.summary}`);
-        console.log(`    ${jiraBaseUrl}/browse/${issue.issueKey}`);
+        log(`- ${issue.issueKey}: ${issue.summary}`);
+        log(`    ${jiraBaseUrl}/browse/${issue.issueKey}`);
         printIssuePRs(issue);
       });
   }
@@ -910,59 +916,128 @@ async function getUnlinkedMergedPRs() {
     .filter(([issueKey, issue]) => !issue.isDone && !unmergedIssueKeys.has(issueKey))
     .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }));
   if (otherNotDoneIssues.length > 0) {
-    console.log(`\n⏳ Other Jira issues tagged with fixVersion "${jiraFixVersion}" that are not Done:\n`);
+    log(`\n⏳ Other Jira issues tagged with fixVersion "${jiraFixVersion}" that are not Done:\n`);
     otherNotDoneIssues.forEach(([issueKey, issue]) => {
-      console.log(`- ${issueKey}: ${issue.summary}`);
-      console.log(`    ${jiraBaseUrl}/browse/${issueKey}`);
+      log(`- ${issueKey}: ${issue.summary}`);
+      log(`    ${jiraBaseUrl}/browse/${issueKey}`);
       printIssueProgress(issue);
       printIssuePRs(issue);
     });
   }
 
   if (wrongVersionJiraIssues.length > 0) {
-    console.log(`\n📦 Jira issues tagged with fixVersion "${jiraFixVersion}" whose PRs were all merged outside ${gitBase}..${gitHead} (fixVersion may be wrong):\n`);
+    log(`\n📦 Jira issues tagged with fixVersion "${jiraFixVersion}" whose PRs were all merged outside ${gitBase}..${gitHead} (fixVersion may be wrong):\n`);
     wrongVersionJiraIssues
       .sort((a, b) => a.issueKey.localeCompare(b.issueKey))
       .forEach(({ issueKey, summary, prNumbers }) => {
-        console.log(`- ${issueKey}: ${summary}`);
-        console.log(`    ${jiraBaseUrl}/browse/${issueKey}`);
+        log(`- ${issueKey}: ${summary}`);
+        log(`    ${jiraBaseUrl}/browse/${issueKey}`);
         prNumbers.forEach(prNum => {
           const status = mergedBeforeBasePRNumbers.has(prNum)
             ? `merged < ${gitBase}`
             : mergedAfterHeadPRNumbers.has(prNum)
             ? `merged > ${gitHead}`
             : "closed";
-          console.log(`  ${status}: https://github.com/concord-consortium/${gitRepo}/pull/${prNum}`);
+          log(`  ${status}: https://github.com/concord-consortium/${gitRepo}/pull/${prNum}`);
         });
       });
   }
 
-  console.log(`\n🔎 PRs Merged Since Last Release Without a Linked Jira Issue:\n`);
+  log(`\n🔎 PRs Merged Since Last Release Without a Linked Jira Issue:\n`);
   if (trulyUnlinked.length === 0) {
-    console.log("✅ No untracked PRs found.");
+    log("✅ No untracked PRs found.");
   } else {
     trulyUnlinked.forEach(pr => {
-      console.log(`❌ ${pr.html_url} - ${pr.title} (by ${pr.user})`);
+      log(`❌ ${pr.html_url} - ${pr.title} (by ${pr.user})`);
       const otherProjectKeys = prReferencedKeys[unlinkedPRs.indexOf(pr)].filter(key => !isThisProjectKey(key));
       otherProjectKeys.forEach(key => {
         const info = issueInfo.get(key);
         const detail = info ? `${info.summary} [${info.status}]` : "(not found)";
-        console.log(`   └─ references ${key}: ${detail} ${jiraBaseUrl}/browse/${key}`);
+        log(`   └─ references ${key}: ${detail} ${jiraBaseUrl}/browse/${key}`);
       });
     });
   }
 
   if (showDetails) {
-    console.log(`\n📋 All issues with fixVersion "${jiraFixVersion}" and their PRs:\n`);
+    log(`\n📋 All issues with fixVersion "${jiraFixVersion}" and their PRs:\n`);
     [...jiraIssuePRs]
       .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
       .forEach(([issueKey, issue]) => {
-        console.log(`- ${issueKey} [${issue.type}] ${issue.status} (${issue.assignee ?? "unassigned"}): ${issue.summary}`);
+        log(`- ${issueKey} [${issue.type}] ${issue.status} (${issue.assignee ?? "unassigned"}): ${issue.summary}`);
         if (issue.prNumbers.length === 0 && issue.otherRepoPRs.length === 0) {
-          console.log("  (no PRs)");
+          log("  (no PRs)");
         }
         printIssuePRs(issue);
       });
+  }
+
+  if (showJson) {
+    const prSummary = pr => ({ number: pr.number, title: pr.title, user: pr.user, url: pr.html_url });
+    const otherProjectRefs = pr => prReferencedKeys[unlinkedPRs.indexOf(pr)]
+      .filter(key => !isThisProjectKey(key))
+      .map(key => ({ key, summary: issueInfo.get(key)?.summary, status: issueInfo.get(key)?.status }));
+    const keysOf = list => new Set(list.map(issue => issue.issueKey));
+    const unmergedKeys = keysOf(unmergedJiraIssues);
+    const doneWithOpenPRKeys = keysOf(doneWithOpenPRIssues);
+    const wrongVersionKeys = keysOf(wrongVersionJiraIssues);
+
+    const report = {
+      jiraProject: jiraProjectKey,
+      fixVersion: jiraFixVersion,
+      repo: thisRepo,
+      base: gitBase,
+      head: gitHead,
+      mergedPRs: mergedPRs.map(prSummary),
+      issues: [...jiraIssuePRs]
+        .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+        .map(([key, issue]) => ({
+          key,
+          url: `${jiraBaseUrl}/browse/${key}`,
+          type: issue.type,
+          summary: issue.summary,
+          status: issue.status,
+          isDone: issue.isDone,
+          assignee: issue.assignee ?? null,
+          projectTeamApprovers: issue.projectTeamApprovers,
+          sprints: issue.sprints,
+          blockers: issue.blockers,
+          flags: {
+            prsNotMerged: unmergedKeys.has(key),
+            doneWithOpenPRs: doneWithOpenPRKeys.has(key),
+            allCodeLandedButNotDone: !issue.isDone && !/project team review/i.test(issue.status ?? "") &&
+              allCodeLanded(issue),
+            noPRs: issue.prNumbers.length === 0 && issue.otherRepoPRs.length === 0,
+            fixVersionMayBeWrong: wrongVersionKeys.has(key)
+          },
+          prs: [
+            ...issue.prNumbers.map(number => ({
+              repo: thisRepo,
+              number,
+              url: `https://github.com/${thisRepo}/pull/${number}`,
+              state: prStatusLabel(number),
+              review: prReviewStates.get(`${thisRepo}#${number}`) ?? null
+            })),
+            ...issue.otherRepoPRs.map(({ repo, number, status }) => ({
+              repo,
+              number,
+              url: `https://github.com/${repo}/pull/${number}`,
+              state: status?.toLowerCase() ?? "unknown",
+              review: prReviewStates.get(`${repo}#${number}`) ?? null
+            }))
+          ]
+        })),
+      mergedPRsWithoutIssueInVersion: {
+        previouslyReleased: previouslyReleased.map(({ pr, issueKey, versions }) =>
+          ({ ...prSummary(pr), issueKey, versions })),
+        referencedCurrentVersion: referencedCurrentVersion.map(({ pr, issueKey, noReleaseConflict }) =>
+          ({ ...prSummary(pr), issueKey, noReleaseConflict })),
+        issueHasNoFixVersion: linkedNeedsAction.map(({ pr, issueKey }) => ({ ...prSummary(pr), issueKey })),
+        noRelease: noReleaseLabeled.map(({ pr, issueKey }) => ({ ...prSummary(pr), issueKey })),
+        longLivedBranch: longLivedBranchPRs.map(prSummary),
+        unlinked: trulyUnlinked.map(pr => ({ ...prSummary(pr), otherProjectRefs: otherProjectRefs(pr) }))
+      }
+    };
+    console.log(JSON.stringify(report, null, 2));
   }
 }
 

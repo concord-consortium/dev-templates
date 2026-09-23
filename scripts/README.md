@@ -96,6 +96,8 @@ By default the script only reports problems. Add `--details` to also list every 
 
     npm run unlinked-prs -- CLUE 7.6.0 collaborative-learning v7.5.0 master --details
 
+Add `--json` to print a single JSON report instead of text. It covers every issue in the fix version (status, assignee, project team approvers, sprints, blockers, flags, and PRs with their state and review status) and the merged PRs grouped the same way the text report groups them. This is meant for other tools, such as a release skill. Warnings still go to stderr.
+
 Notes on what the script reports:
 - PRs Jira links from other repositories (e.g. a `report-service` PR on a CLUE story) are shown as "(other repo)". They count as unmerged only while they are open.
 - Issues in the fix version that are not Done are listed with their status and assignee. Issues in project team review also show the "Project Team Approver" they are waiting on.
