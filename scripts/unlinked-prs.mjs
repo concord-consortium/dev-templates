@@ -829,6 +829,15 @@ async function getUnlinkedMergedPRs() {
     });
   };
 
+  // True when at least one PR landed in this release and nothing linked is still
+  // open or only merged after gitHead.
+  const allCodeLanded = ({ prNumbers, otherRepoPRs }) => {
+    const landed = ["merged", `merged < ${gitBase}`, "closed"];
+    return prNumbers.some(n => prStatusLabel(n) === "merged") &&
+      prNumbers.every(n => landed.includes(prStatusLabel(n))) &&
+      !otherRepoPRs.some(pr => pr.status === "OPEN" || pr.status === "DRAFT");
+  };
+
   // Lines explaining where an issue that isn't Done stands and who it waits on.
   const printIssueProgress = (issue) => {
     if (issue.isDone) return;
@@ -836,6 +845,8 @@ async function getUnlinkedMergedPRs() {
     if (/project team review/i.test(issue.status ?? "")) {
       const approvers = issue.projectTeamApprovers.join(", ") || "no Project Team Approver set";
       console.log(`    waiting on project team review: ${approvers}`);
+    } else if (allCodeLanded(issue)) {
+      console.log(`    all PRs are merged — should this issue be Done?`);
     }
   };
 
