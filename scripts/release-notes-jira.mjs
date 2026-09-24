@@ -108,9 +108,8 @@ function storyItem(story) {
     : `**${story.key}:** ${text}${conflictMarker}`;
 }
 
-const prefix = slack ? '> ' : '';
 function print(msg) {
-  console.log(`${prefix}${msg}`);
+  console.log(msg);
 }
 function printHeader(msg) {
   if (slack) {
@@ -168,8 +167,7 @@ printSection("🛠 Under the Hood:", underTheHood);
 
 if (notDone.length > 0) {
   const keys = notDone.map(s => s.key).join(", ");
-  // Intentionally using console.log instead of print() so this line lacks
-  // the ">" prefix in Slack mode — it should stand out and not be pasted
-  // into Slack with the release notes.
-  console.log(`⚠️ ${notDone.length} story(ies) not yet done: ${keys}`);
+  // Written to stderr so it shows in the terminal but isn't part of the notes
+  // when they are copied or piped into a release or a Slack post.
+  console.error(`\n⚠️ ${notDone.length} story(ies) not yet done: ${keys}`);
 }
