@@ -48,6 +48,8 @@ Example:
 
     npm run release-notes-jira LARA "LARA v5.0.0" slack
 
+Within each section (Features & Improvements, Bug Fixes, Under the Hood), stories are grouped under the name of their parent epic, with stories that have no epic listed last under "Other". A `Blurb:` paragraph in a story's description is used instead of its summary.
+
 ## Release Status
 
 This uses Pivotal Tracker and GitHub to find the stories and PRs related to the release. To run it you'll need a token from Pivotal and a token from GitHub. You can make a GitHub fine grain access token so it can't be abused or a just use a regular GitHub token. If you use a fine grain token, it has to have permission to read the repository content and the pull requests.  
