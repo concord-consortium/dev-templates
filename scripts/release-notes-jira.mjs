@@ -108,9 +108,8 @@ function storyItem(story) {
     : `**${story.key}:** ${text}${conflictMarker}`;
 }
 
-const prefix = slack ? '> ' : '';
 function print(msg) {
-  console.log(`${prefix}${msg}`);
+  console.log(msg);
 }
 function printHeader(msg) {
   if (slack) {
@@ -120,22 +119,45 @@ function printHeader(msg) {
   }
 }
 
-function sortByParent(stories) {
-  return stories.slice().sort((a, b) => {
-    const parentA = a.fields.parent?.key ?? "\uffff";
-    const parentB = b.fields.parent?.key ?? "\uffff";
-    if (parentA !== parentB) return parentA.localeCompare(parentB);
-    return a.key.localeCompare(b.key);
-  });
+const byKey = (a, b) => a.key.localeCompare(b.key, undefined, { numeric: true });
+
+// Groups a section's stories by parent epic, epics in key order, with stories that have no
+// epic last. Each group is { epic: { key, summary } | null, stories }.
+function groupByEpic(stories) {
+  const groups = new Map();
+  for (const story of stories) {
+    const parent = story.fields.parent;
+    const groupKey = parent?.key ?? "";
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, { epic: parent ? { key: parent.key, summary: parent.fields?.summary } : null, stories: [] });
+    }
+    groups.get(groupKey).stories.push(story);
+  }
+  return [...groups.values()]
+    .sort((a, b) => (a.epic ? 0 : 1) - (b.epic ? 0 : 1) || (a.epic ? byKey(a.epic, b.epic) : 0))
+    .map(group => ({ ...group, stories: group.stories.sort(byKey) }));
+}
+
+function printEpicHeading(epic) {
+  const name = epic ? (epic.summary ?? epic.key) : "Other";
+  print(slack ? `_${name}_` : `**${name}**`);
 }
 
 function printSection(msg, stories) {
   if (stories.length > 0) {
     printHeader(msg);
-    for (const story of sortByParent(stories)) {
-      print(`- ${storyItem(story)}`);
+    const groups = groupByEpic(stories);
+    // Headings only help when there is at least one epic to name; a section with no epics
+    // at all stays a plain list.
+    const showHeadings = groups.some(group => group.epic);
+    for (const group of groups) {
+      if (showHeadings) printEpicHeading(group.epic);
+      for (const story of group.stories) {
+        print(`- ${storyItem(story)}`);
+      }
+      if (showHeadings) print("");
     }
-    print("");
+    if (!showHeadings) print("");
   }
 }
 
@@ -145,8 +167,7 @@ printSection("🛠 Under the Hood:", underTheHood);
 
 if (notDone.length > 0) {
   const keys = notDone.map(s => s.key).join(", ");
-  // Intentionally using console.log instead of print() so this line lacks
-  // the ">" prefix in Slack mode — it should stand out and not be pasted
-  // into Slack with the release notes.
-  console.log(`⚠️ ${notDone.length} story(ies) not yet done: ${keys}`);
+  // Written to stderr so it shows in the terminal but isn't part of the notes
+  // when they are copied or piped into a release or a Slack post.
+  console.error(`\n⚠️ ${notDone.length} story(ies) not yet done: ${keys}`);
 }
